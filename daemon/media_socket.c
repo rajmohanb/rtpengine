@@ -1654,8 +1654,32 @@ out:
 // appropriate locks must be held
 int media_socket_dequeue(struct media_packet *mp, struct packet_stream *sink) {
 	struct codec_packet *p;
-	while ((p = g_queue_pop_head(&mp->packets_out)))
+    GList *k, *o;
+    struct call_media *fm; //forked media
+    struct packet_stream *fps; //forked packet stream
+
+    if (mp->media->monologue->forked_dialogue) {
+        k = mp->media->monologue->active_dialogue->medias.head;
+        fm = k->data;
+        o = fm->streams.head;
+        fps = o->data;
+
+        mutex_lock(&fps->out_lock);
+    }
+
+	while ((p = g_queue_pop_head(&mp->packets_out))) {
 		send_timer_push(sink->send_timer, p);
+
+		if (mp->media->monologue->forked_dialogue) {
+            send_timer_push(fps->send_timer, p);
+		}
+	    codec_packet_free(p);
+	}
+
+
+    if (mp->media->monologue->forked_dialogue)
+        mutex_unlock(&fps->out_lock);
+
 	return 0;
 }
 
@@ -1693,7 +1717,6 @@ static int stream_packet(struct packet_handler_ctx *phc) {
 		goto out;
 	__C_DBG("Handling packet on: %s:%d", sockaddr_print_buf(&phc->mp.stream->endpoint.address),
 			phc->mp.stream->endpoint.port);
-
 
 	phc->mp.media = phc->mp.stream->media;
 

@@ -341,6 +341,7 @@ struct call_monologue {
 	enum termination_reason term_reason;
 	GHashTable		*other_tags;
 	struct call_monologue	*active_dialogue;
+	struct call_monologue	*forked_dialogue;
 	GQueue			medias;
 	GHashTable		*media_ids;
 	struct media_player	*player;
@@ -412,6 +413,8 @@ struct packet_stream *__packet_stream_new(struct call *call);
 struct call *call_get_or_create(const str *callid, enum call_type);
 struct call *call_get_opmode(const str *callid, enum call_opmode opmode);
 struct call_monologue *call_get_mono_dialogue(struct call *call, const str *fromtag, const str *totag,
+		const str *viabranch);
+struct call_monologue *call_get_forked_mono_dialogue(struct call *call, const str *fromtag, const str *totag,
 		const str *viabranch);
 struct call *call_get(const str *callid);
 int monologue_offer_answer(struct call_monologue *monologue, GQueue *streams, const struct sdp_ng_flags *flags);

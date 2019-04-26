@@ -1838,6 +1838,258 @@ out:
 }
 
 
+const char *call_fork_media_ng(bencode_item_t *input, bencode_item_t *output) {
+
+	str sdp;
+	const char *errstr = NULL;
+	struct call *call;
+	struct call_monologue *monologue, *fs;
+	struct sdp_ng_flags flags;
+	GQueue parsed = G_QUEUE_INIT;
+	GQueue streams = G_QUEUE_INIT;
+	struct sdp_chopper *chopper;
+	int ret;
+
+	if (!bencode_dictionary_get_str(input, "sdp", &sdp))
+		return "No SDP body in message";
+
+	call_ng_process_flags(&flags, input, OP_OFFER);
+
+	if (!flags.call_id.s)
+		return "No call-id in message";
+	if (!flags.from_tag.s)
+		return "No from-tag in message";
+
+	call = call_get(&flags.call_id);
+
+	errstr = "Unknown call-id";
+	if (!call)
+		goto out;
+
+	errstr = "Failed to parse SDP";
+	if (sdp_parse(&sdp, &parsed, &flags))
+		goto out;
+
+	errstr = "Incomplete SDP specification";
+	if (sdp_streams(&parsed, &streams, &flags))
+		goto out;
+
+	/* TODO:
+	 * if call direction is not single way, then bail out. Fork currently works only one way?
+	 */
+
+	/* get 'this' monologue */
+	monologue = call_get_mono_dialogue(call, &flags.from_tag, &flags.to_tag, &flags.via_branch);
+	errstr = "Invalid dialogue association";
+	if (!monologue) {
+		rwlock_unlock_w(&call->master_lock);
+		obj_put(call);
+		goto out;
+	}
+
+	errstr = "Invalid monologue tag type";
+	if (monologue->tagtype != FROM_TAG) {
+		__C_DBG("invalid monologue tag type! this can not happen ");
+		goto out;
+	}
+
+	/* create the forked monologue */
+	__C_DBG("create new \"other side\" forked monologue for viabranch "STR_FORMAT, STR_FMT0(&flags.via_branch));
+	fs = __monologue_create(call);
+	monologue->forked_dialogue = fs;
+	fs->active_dialogue = monologue;
+	__monologue_viabranch(fs, &flags.via_branch);
+
+	chopper = sdp_chopper_new(&sdp);
+	bencode_buffer_destroy_add(output->buffer, (free_func_t) sdp_chopper_destroy, chopper);
+
+#if 0
+	detect_setup_recording(call, &flags.record_call_str, &flags.metadata);
+	if (flags.record_call) {
+		call->recording_on = 1;
+		recording_start(call, NULL, &flags.metadata);
+	}
+#endif
+
+	ret = forked_monologue_offer_answer(monologue, &streams, &flags);
+	if (!ret) {
+		// SDP fragments for trickle ICE are consumed with no replacement returned
+		if (!flags.fragment)
+			ret = sdp_replace(chopper, &parsed, monologue->forked_dialogue, &flags);
+	}
+
+#if 0
+	struct recording *recording = call->recording;
+	if (recording != NULL) {
+		meta_write_sdp_before(recording, &sdp, monologue, opmode);
+		meta_write_sdp_after(recording, chopper->output,
+			       monologue, opmode);
+
+		recording_response(recording, output);
+	}
+#endif
+
+	rwlock_unlock_w(&call->master_lock);
+
+	if (!flags.no_redis_update) {
+			redis_update_onekey(call, rtpe_redis_write);
+	} else {
+		ilog(LOG_DEBUG, "Not updating Redis due to present no-redis-update flag");
+	}
+	obj_put(call);
+
+	gettimeofday(&(monologue->started), NULL);
+
+	errstr = "Error rewriting SDP";
+
+	if (ret == ERROR_NO_FREE_PORTS || ret == ERROR_NO_FREE_LOGS) {
+		ilog(LOG_ERR, "Destroying call");
+		errstr = "Ran out of ports";
+		call_destroy(call);
+	}
+
+	if (ret)
+		goto out;
+
+	if (chopper->output->len)
+		bencode_dictionary_add_string_len(output, "sdp", chopper->output->str, chopper->output->len);
+
+	errstr = NULL;
+out:
+	sdp_free(&parsed);
+	streams_free(&streams);
+	call_ng_free_flags(&flags);
+
+	return errstr;
+}
+
+
+const char *call_fork_answer_ng(bencode_item_t *input, bencode_item_t *output) {
+	str sdp;
+	const char *errstr = NULL;
+	struct call *call;
+	struct call_monologue *monologue, *fs;
+	struct sdp_ng_flags flags;
+	GQueue parsed = G_QUEUE_INIT;
+	GQueue streams = G_QUEUE_INIT;
+	struct sdp_chopper *chopper;
+	int ret;
+
+	if (!bencode_dictionary_get_str(input, "sdp", &sdp))
+		return "No SDP body in message";
+
+	call_ng_process_flags(&flags, input, OP_ANSWER);
+
+	if (!flags.call_id.s)
+		return "No call-id in message";
+	if (!flags.from_tag.s)
+		return "No from-tag in message";
+	if (!flags.to_tag.s)
+		return "No to-tag in message";
+	str_swap(&flags.to_tag, &flags.from_tag);
+
+
+	call = call_get(&flags.call_id);
+
+	errstr = "Unknown call-id";
+	if (!call)
+		goto out;
+
+	errstr = "Failed to parse SDP";
+	if (sdp_parse(&sdp, &parsed, &flags))
+		goto out;
+
+	errstr = "Incomplete SDP specification";
+	if (sdp_streams(&parsed, &streams, &flags))
+		goto out;
+
+	/* TODO:
+	 * if call direction is not single way, then bail out. Fork currently works only one way?
+	 */
+
+	/* get 'this' monologue */
+	monologue = call_get_forked_mono_dialogue(call, &flags.from_tag, &flags.to_tag, &flags.via_branch);
+	errstr = "Invalid dialogue association";
+	if (!monologue) {
+		rwlock_unlock_w(&call->master_lock);
+		obj_put(call);
+		goto out;
+	}
+
+	monologue->tagtype = TO_TAG;
+
+#if 0
+	errstr = "Invalid monologue tag type";
+	if (monologue->tagtype != FROM_TAG) {
+		__C_DBG("invalid monologue tag type! this can not happen ");
+		goto out;
+	}
+#endif
+
+	chopper = sdp_chopper_new(&sdp);
+	bencode_buffer_destroy_add(output->buffer, (free_func_t) sdp_chopper_destroy, chopper);
+
+#if 0
+	detect_setup_recording(call, &flags.record_call_str, &flags.metadata);
+	if (flags.record_call) {
+		call->recording_on = 1;
+		recording_start(call, NULL, &flags.metadata);
+	}
+#endif
+
+	ret = forked_monologue_offer_answer(monologue, &streams, &flags);
+	if (!ret) {
+		// SDP fragments for trickle ICE are consumed with no replacement returned
+		if (!flags.fragment)
+			ret = sdp_replace(chopper, &parsed, monologue->active_dialogue, &flags);
+	}
+
+#if 0
+	struct recording *recording = call->recording;
+	if (recording != NULL) {
+		meta_write_sdp_before(recording, &sdp, monologue, opmode);
+		meta_write_sdp_after(recording, chopper->output,
+			       monologue, opmode);
+
+		recording_response(recording, output);
+	}
+#endif
+
+	rwlock_unlock_w(&call->master_lock);
+
+	if (!flags.no_redis_update) {
+			redis_update_onekey(call, rtpe_redis_write);
+	} else {
+		ilog(LOG_DEBUG, "Not updating Redis due to present no-redis-update flag");
+	}
+	obj_put(call);
+
+	gettimeofday(&(monologue->started), NULL);
+
+	errstr = "Error rewriting SDP";
+
+	if (ret == ERROR_NO_FREE_PORTS || ret == ERROR_NO_FREE_LOGS) {
+		ilog(LOG_ERR, "Destroying call");
+		errstr = "Ran out of ports";
+		call_destroy(call);
+	}
+
+	if (ret)
+		goto out;
+
+	if (chopper->output->len)
+		bencode_dictionary_add_string_len(output, "sdp", chopper->output->str, chopper->output->len);
+
+	errstr = NULL;
+out:
+	sdp_free(&parsed);
+	streams_free(&streams);
+	call_ng_free_flags(&flags);
+
+	return errstr;
+}
+
+
 int call_interfaces_init() {
 	const char *errptr;
 	int erroff;

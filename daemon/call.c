@@ -2004,6 +2004,243 @@ error_intf:
 }
 
 
+/* called with call->master_lock held in W */
+int forked_monologue_offer_answer(struct call_monologue *other_ml, GQueue *streams,
+		const struct sdp_ng_flags *flags)
+{
+	struct stream_params *sp;
+	GList *media_iter, *ml_media, *other_ml_media;
+	struct call_media *media, *other_media;
+	unsigned int num_ports;
+	struct call_monologue *monologue;
+	struct endpoint_map *em;
+	struct call *call;
+
+	/* we must have a complete dialogue, even though the to-tag (monologue->tag)
+	 * may not be known yet */
+	if (!other_ml) {
+		ilog(LOG_ERROR, "Incomplete dialogue association");
+		return -1;
+	}
+
+	if (flags->opmode == OP_OFFER)
+		monologue = other_ml->forked_dialogue;
+	else
+		monologue = other_ml->active_dialogue;
+	call = monologue->call;
+
+	call->last_signal = rtpe_now.tv_sec;
+	call->deleted = 0;
+
+	__C_DBG("this="STR_FORMAT" other="STR_FORMAT, STR_FMT(&monologue->tag), STR_FMT(&other_ml->tag));
+
+	__tos_change(call, flags);
+
+	if (flags && flags->label.s) {
+		call_str_cpy(call, &other_ml->label, &flags->label);
+		g_hash_table_replace(call->labels, &other_ml->label, other_ml);
+	}
+
+	ml_media = other_ml_media = NULL;
+
+	for (media_iter = streams->head; media_iter; media_iter = media_iter->next) {
+		sp = media_iter->data;
+		__C_DBG("processing media stream #%u", sp->index);
+
+		/* first, check for existence of call_media struct on both sides of
+		 * the dialogue */
+		media = __get_media(monologue, &ml_media, sp, flags);
+		other_media = __get_media(other_ml, &other_ml_media, sp, flags);
+		/* OTHER is the side which has sent the message. SDP parameters in
+		 * "sp" are as advertised by OTHER side. The message will be sent to
+		 * THIS side. Parameters sent to THIS side may be overridden by
+		 * what's in "flags". If this is an answer, or if we have talked to
+		 * THIS side (recipient) before, then the structs will be populated with
+		 * details already. */
+
+		if (flags && flags->fragment) {
+			// trickle ICE SDP fragment. don't do anything other than update
+			// the ICE stuff.
+			ice_update(other_media->ice_agent, sp);
+			continue;
+		}
+
+		if (flags && flags->opmode == OP_OFFER && flags->reset) {
+			MEDIA_CLEAR(media, INITIALIZED);
+			MEDIA_CLEAR(other_media, INITIALIZED);
+			if (media->ice_agent)
+				ice_restart(media->ice_agent);
+			if (other_media->ice_agent)
+				ice_restart(other_media->ice_agent);
+		}
+
+		/* deduct protocol from stream parameters received */
+		if (other_media->protocol != sp->protocol) {
+			other_media->protocol = sp->protocol;
+			/* if the endpoint changes the protocol, we reset the other side's
+			 * protocol as well. this lets us remember our previous overrides,
+			 * but also lets endpoints re-negotiate. */
+			media->protocol = NULL;
+		}
+		/* default is to leave the protocol unchanged */
+		if (!media->protocol)
+			media->protocol = other_media->protocol;
+		/* allow override of outgoing protocol even if we know it already */
+		/* but only if this is an RTP-based protocol */
+		if (flags && flags->transport_protocol
+				&& other_media->protocol && other_media->protocol->rtp)
+			media->protocol = flags->transport_protocol;
+
+		__update_media_id(media, other_media, sp, flags);
+		__endpoint_loop_protect(sp, other_media);
+
+		if (sp->rtp_endpoint.port) {
+			/* copy parameters advertised by the sender of this message */
+			bf_copy_same(&other_media->media_flags, &sp->sp_flags,
+					SHARED_FLAG_RTCP_MUX | SHARED_FLAG_ASYMMETRIC | SHARED_FLAG_UNIDIRECTIONAL |
+					SHARED_FLAG_ICE | SHARED_FLAG_TRICKLE_ICE | SHARED_FLAG_ICE_LITE);
+
+			// steal the entire queue of offered crypto params
+			crypto_params_sdes_queue_clear(&other_media->sdes_in);
+			other_media->sdes_in = sp->sdes_params;
+			g_queue_init(&sp->sdes_params);
+
+			if (other_media->sdes_in.length) {
+				MEDIA_SET(other_media, SDES);
+				__sdes_accept(other_media, flags);
+			}
+		}
+
+		// codec and RTP payload types handling
+		if (sp->ptime > 0) {
+			if (!MEDIA_ISSET(media, PTIME_OVERRIDE))
+				media->ptime = sp->ptime;
+			if (!MEDIA_ISSET(other_media, PTIME_OVERRIDE))
+				other_media->ptime = sp->ptime;
+		}
+		if (flags && flags->ptime > 0) {
+			media->ptime = flags->ptime;
+			MEDIA_SET(media, PTIME_OVERRIDE);
+			MEDIA_SET(other_media, PTIME_OVERRIDE);
+		}
+		if (flags && flags->rev_ptime > 0) {
+			other_media->ptime = flags->rev_ptime;
+			MEDIA_SET(media, PTIME_OVERRIDE);
+			MEDIA_SET(other_media, PTIME_OVERRIDE);
+		}
+		codec_rtp_payload_types(media, other_media, &sp->rtp_payload_types, flags);
+		codec_handlers_update(media, other_media, flags);
+
+		/* send and recv are from our POV */
+		bf_copy_same(&media->media_flags, &sp->sp_flags,
+				SP_FLAG_SEND | SP_FLAG_RECV);
+		bf_copy(&other_media->media_flags, MEDIA_FLAG_RECV, &sp->sp_flags, SP_FLAG_SEND);
+		bf_copy(&other_media->media_flags, MEDIA_FLAG_SEND, &sp->sp_flags, SP_FLAG_RECV);
+
+		if (sp->rtp_endpoint.port) {
+			/* DTLS stuff */
+			__dtls_logic(flags, other_media, sp);
+
+			/* control rtcp-mux */
+			__rtcp_mux_logic(flags, media, other_media);
+
+			/* SDES and DTLS */
+			__generate_crypto(flags, media, other_media);
+
+			/* deduct address family from stream parameters received */
+			other_media->desired_family = sp->rtp_endpoint.address.family;
+			/* for outgoing SDP, use "direction"/DF or default to what was offered */
+			if (!media->desired_family)
+				media->desired_family = other_media->desired_family;
+			if (sp->desired_family)
+				media->desired_family = sp->desired_family;
+		}
+
+		/* determine number of consecutive ports needed locally.
+		 * XXX only do *=2 for RTP streams? */
+		num_ports = sp->consecutive_ports;
+		num_ports *= 2;
+
+
+		/* local interface selection */
+		__init_interface(media, &sp->direction[1], num_ports);
+		__init_interface(other_media, &sp->direction[0], num_ports);
+
+		if (media->logical_intf == NULL || other_media->logical_intf == NULL) {
+			goto error_intf;
+		}
+
+		/* ICE stuff - must come after interface and address family selection */
+		__ice_offer(flags, media, other_media);
+		__ice_start(other_media);
+		__ice_start(media);
+
+
+
+		/* we now know what's being advertised by the other side */
+		MEDIA_SET(other_media, INITIALIZED);
+
+
+		if (!sp->rtp_endpoint.port) {
+			/* Zero port: stream has been rejected.
+			 * RFC 3264, chapter 6:
+			 * If a stream is rejected, the offerer and answerer MUST NOT
+			 * generate media (or RTCP packets) for that stream. */
+			__disable_streams(media, num_ports);
+			__disable_streams(other_media, num_ports);
+			goto init;
+		}
+		if (is_addr_unspecified(&sp->rtp_endpoint.address) && !is_trickle_ice_address(&sp->rtp_endpoint)) {
+			/* Zero endpoint address, equivalent to setting the media stream
+			 * to sendonly or inactive */
+			MEDIA_CLEAR(media, RECV);
+			MEDIA_CLEAR(other_media, SEND);
+		}
+
+
+		/* get that many ports for each side, and one packet stream for each port, then
+		 * assign the ports to the streams */
+		em = __get_endpoint_map(media, num_ports, &sp->rtp_endpoint, flags);
+		if (!em) {
+			goto error_ports;
+		}
+
+		__num_media_streams(media, num_ports);
+		__assign_stream_fds(media, &em->intf_sfds);
+
+		if (__num_media_streams(other_media, num_ports)) {
+			/* new streams created on OTHER side. normally only happens in
+			 * initial offer. create a wildcard endpoint_map to be filled in
+			 * when the answer comes. */
+			if (__wildcard_endpoint_map(other_media, num_ports))
+				goto error_ports;
+		}
+
+init:
+		if (__init_streams(media, other_media, NULL))
+			return -1;
+		if (__init_streams(other_media, media, sp))
+			return -1;
+
+		/* we are now ready to fire up ICE if so desired and requested */
+		ice_update(other_media->ice_agent, sp);
+		ice_update(media->ice_agent, NULL); /* this is in case rtcp-mux has changed */
+
+		recording_setup_media(media);
+	}
+
+	return 0;
+
+error_ports:
+	ilog(LOG_ERR, "Error allocating media ports");
+	return ERROR_NO_FREE_PORTS;
+
+error_intf:
+	ilog(LOG_ERR, "Error finding logical interface with free ports");
+	return ERROR_NO_FREE_LOGS;
+}
+
+
 static int __rtp_stats_sort(const void *ap, const void *bp) {
 	const struct rtp_stats *a = ap, *b = bp;
 
@@ -2695,6 +2932,62 @@ struct call_monologue *call_get_mono_dialogue(struct call *call, const str *from
 		return call_get_monologue(call, fromtag, NULL, viabranch);
 	return call_get_dialogue(call, fromtag, totag, viabranch);
 }
+
+
+struct call_monologue *call_get_forked_mono_dialogue(struct call *call, const str *fromtag, const str *totag,
+		const str *viabranch)
+{
+	struct call_monologue *ft, *tt;
+
+	__C_DBG("getting dialogue for tags '"STR_FORMAT"'<>'"STR_FORMAT"' in call '"STR_FORMAT"'",
+			STR_FMT(fromtag), STR_FMT(totag), STR_FMT(&call->callid));
+
+	/* we start with the to-tag. if it's not known, we treat it as a branched offer */
+	tt = g_hash_table_lookup(call->tags, totag);
+	if (!tt)
+		return call_get_monologue(call, fromtag, totag, viabranch);
+
+	/* if the from-tag is known already, return that */
+	ft = g_hash_table_lookup(call->tags, fromtag);
+	if (ft) {
+		__C_DBG("found existing dialogue");
+
+		/* make sure that the dialogue is actually intact */
+		/* fastpath for a common case */
+		if (!str_cmp_str(totag, &ft->active_dialogue->tag))
+			goto done;
+	}
+	else {
+		/* perhaps we can determine the monologue from the viabranch */
+		if (viabranch)
+			ft = g_hash_table_lookup(call->viabranches, viabranch);
+	}
+
+	if (!ft) {
+		/* if we don't have a fromtag monologue yet, we can use a half-complete dialogue
+		 * from the totag if there is one. otherwise we have to create a new one. */
+		ft = tt->active_dialogue;
+		if (ft->tag.s)
+			ft = __monologue_create(call);
+	}
+
+	/* the fromtag monologue may be newly created, or half-complete from the totag, or
+	 * derived from the viabranch. */
+	if (!ft->tag.s)
+		__monologue_tag(ft, fromtag);
+
+	__monologue_unkernelize(ft->active_dialogue);
+	__monologue_unkernelize(tt->forked_dialogue);
+	ft->active_dialogue = tt;
+	tt->forked_dialogue = ft;
+	// __fix_other_tags(ft);
+
+done:
+	__monologue_unkernelize(ft);
+	__monologue_unkernelize(ft->active_dialogue);
+	return ft;
+}
+
 
 
 int call_delete_branch(const str *callid, const str *branch,
