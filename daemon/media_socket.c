@@ -1659,7 +1659,8 @@ int media_socket_dequeue(struct media_packet *mp, struct packet_stream *sink) {
     struct packet_stream *fps; //forked packet stream
 
     if (mp->media->monologue->forked_dialogue) {
-        k = mp->media->monologue->active_dialogue->medias.head;
+        k = mp->media->monologue->forked_dialogue->medias.head;
+        //k = mp->media->monologue->active_dialogue->medias.head;
         fm = k->data;
         o = fm->streams.head;
         fps = o->data;
@@ -1718,6 +1719,7 @@ static int stream_packet(struct packet_handler_ctx *phc) {
 	__C_DBG("Handling packet on: %s:%d", sockaddr_print_buf(&phc->mp.stream->endpoint.address),
 			phc->mp.stream->endpoint.port);
 
+
 	phc->mp.media = phc->mp.stream->media;
 
 	if (!phc->mp.stream->selected_sfd)
@@ -1766,6 +1768,10 @@ static int stream_packet(struct packet_handler_ctx *phc) {
 	if (phc->mp.call->recording)
 		dump_packet(&phc->mp, &phc->s);
 
+    if (phc->mp.media->monologue->tagtype == FROM_TAG) {
+		__C_DBG("Break point here ...");
+    }
+
 	// ready to process
 
 	phc->mp.raw = phc->s;
@@ -1798,12 +1804,20 @@ static int stream_packet(struct packet_handler_ctx *phc) {
 
 	mutex_lock(&phc->sink->out_lock);
 
+	if (phc->sink->advertised_endpoint.port) {
+           __C_DBG("Destination sink: %s:%d", sockaddr_print_buf(&phc->sink->advertised_endpoint.address),
+                       phc->sink->advertised_endpoint.port);
+	} else {
+		__C_DBG("Destination sink not set");
+    }
+
 	if (!phc->sink->advertised_endpoint.port
 			|| (is_addr_unspecified(&phc->sink->advertised_endpoint.address)
 				&& !is_trickle_ice_address(&phc->sink->advertised_endpoint))
 			|| handler_ret < 0)
 	{
 		mutex_unlock(&phc->sink->out_lock);
+		__C_DBG("Dropping packet on:");
 		goto drop;
 	}
 

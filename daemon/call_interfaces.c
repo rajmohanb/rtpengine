@@ -1879,7 +1879,7 @@ const char *call_fork_media_ng(bencode_item_t *input, bencode_item_t *output) {
 	 */
 
 	/* get 'this' monologue */
-	monologue = call_get_mono_dialogue(call, &flags.from_tag, &flags.to_tag, &flags.via_branch);
+	monologue = call_get_mono_dialogue(call, &flags.from_tag, NULL, NULL);
 	errstr = "Invalid dialogue association";
 	if (!monologue) {
 		rwlock_unlock_w(&call->master_lock);
@@ -1889,7 +1889,7 @@ const char *call_fork_media_ng(bencode_item_t *input, bencode_item_t *output) {
 
 	errstr = "Invalid monologue tag type";
 	if (monologue->tagtype != FROM_TAG) {
-		__C_DBG("invalid monologue tag type! this can not happen ");
+		__C_DBG("invalid monologue tag type! this should not happen ");
 		goto out;
 	}
 
@@ -1903,13 +1903,11 @@ const char *call_fork_media_ng(bencode_item_t *input, bencode_item_t *output) {
 	chopper = sdp_chopper_new(&sdp);
 	bencode_buffer_destroy_add(output->buffer, (free_func_t) sdp_chopper_destroy, chopper);
 
-#if 0
 	detect_setup_recording(call, &flags.record_call_str, &flags.metadata);
 	if (flags.record_call) {
 		call->recording_on = 1;
 		recording_start(call, NULL, &flags.metadata);
 	}
-#endif
 
 	ret = forked_monologue_offer_answer(monologue, &streams, &flags);
 	if (!ret) {
@@ -2029,13 +2027,11 @@ const char *call_fork_answer_ng(bencode_item_t *input, bencode_item_t *output) {
 	chopper = sdp_chopper_new(&sdp);
 	bencode_buffer_destroy_add(output->buffer, (free_func_t) sdp_chopper_destroy, chopper);
 
-#if 0
 	detect_setup_recording(call, &flags.record_call_str, &flags.metadata);
 	if (flags.record_call) {
 		call->recording_on = 1;
 		recording_start(call, NULL, &flags.metadata);
 	}
-#endif
 
 	ret = forked_monologue_offer_answer(monologue, &streams, &flags);
 	if (!ret) {
