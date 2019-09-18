@@ -1768,10 +1768,6 @@ static int stream_packet(struct packet_handler_ctx *phc) {
 	if (phc->mp.call->recording)
 		dump_packet(&phc->mp, &phc->s);
 
-    if (phc->mp.media->monologue->tagtype == FROM_TAG) {
-		__C_DBG("Break point here ...");
-    }
-
 	// ready to process
 
 	phc->mp.raw = phc->s;

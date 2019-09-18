@@ -1165,99 +1165,6 @@ static int __init_streams(struct call_media *A, struct call_media *B, const stru
 }
 
 
-static int __init_forked_streams(struct call_media *A, struct call_media *B, const struct stream_params *sp) {
-	GList *la, *lb;
-	struct packet_stream *a, *ax, *b;
-	unsigned int port_off = 0;
-
-	la = A->streams.head;
-	lb = B->streams.head;
-
-	while (la) {
-		assert(lb != NULL);
-		a = la->data;
-		b = lb->data;
-
-		/* RTP */
-		a->rtp_sink = b;
-		PS_SET(a, RTP); /* XXX technically not correct, could be udptl too */
-
-		__rtp_stats_update(a->rtp_stats, A->codecs_recv);
-
-		if (sp) {
-			__fill_stream(a, &sp->rtp_endpoint, port_off, sp);
-			bf_copy_same(&a->ps_flags, &sp->sp_flags,
-					SHARED_FLAG_STRICT_SOURCE | SHARED_FLAG_MEDIA_HANDOVER);
-		}
-		bf_copy_same(&a->ps_flags, &A->media_flags, SHARED_FLAG_ICE);
-
-		if (__init_stream(a))
-			return -1;
-
-		/* RTCP */
-		if (!MEDIA_ISSET(B, RTCP_MUX)) {
-			lb = lb->next;
-			assert(lb != NULL);
-			b = lb->data;
-		}
-
-		if (!MEDIA_ISSET(A, RTCP_MUX)) {
-			a->rtcp_sink = NULL;
-			PS_CLEAR(a, RTCP);
-		}
-		else {
-			a->rtcp_sink = b;
-			PS_SET(a, RTCP);
-			PS_CLEAR(a, IMPLICIT_RTCP);
-		}
-
-		ax = a;
-
-		/* if muxing, this is the fallback RTCP port. it also contains the RTCP
-		 * crypto context */
-		la = la->next;
-		assert(la != NULL);
-		a = la->data;
-
-		a->rtp_sink = NULL;
-		a->rtcp_sink = b;
-		PS_CLEAR(a, RTP);
-		PS_SET(a, RTCP);
-		a->rtcp_sibling = NULL;
-		bf_copy(&a->ps_flags, PS_FLAG_FALLBACK_RTCP, &ax->ps_flags, PS_FLAG_RTCP);
-
-		ax->rtcp_sibling = a;
-
-		if (sp) {
-			if (!SP_ISSET(sp, IMPLICIT_RTCP)) {
-				__fill_stream(a, &sp->rtcp_endpoint, port_off, sp);
-				PS_CLEAR(a, IMPLICIT_RTCP);
-			}
-			else {
-				__fill_stream(a, &sp->rtp_endpoint, port_off + 1, sp);
-				PS_SET(a, IMPLICIT_RTCP);
-			}
-			bf_copy_same(&a->ps_flags, &sp->sp_flags,
-					SHARED_FLAG_STRICT_SOURCE | SHARED_FLAG_MEDIA_HANDOVER);
-		}
-		bf_copy_same(&a->ps_flags, &A->media_flags, SHARED_FLAG_ICE);
-
-		if (__init_stream(a))
-			return -1;
-
-		recording_setup_stream(ax); // RTP
-		recording_setup_stream(a); // RTCP
-
-		la = la->next;
-		lb = lb->next;
-
-		port_off += 2;
-	}
-
-	return 0;
-}
-
-
 static void __ice_offer(const struct sdp_ng_flags *flags, struct call_media *this,
 		struct call_media *other)
 {
@@ -2305,27 +2212,13 @@ int forked_monologue_offer_answer(struct call_monologue *other_ml, GQueue *strea
             __assign_stream_fds(media, &em->intf_sfds);
         }
 
-#if 0
-        if (__num_media_streams(other_media, num_ports)) {
-            /* new streams created on OTHER side. normally only happens in
-             * initial offer. create a wildcard endpoint_map to be filled in
-             * when the answer comes. */
-            if (__wildcard_endpoint_map(other_media, num_ports))
-                goto error_ports;
-        }
-#endif
-
 init:
         if (flags->opmode == OP_OFFER) {
             if (__init_streams(media, other_media, NULL))
                 return -1;
         } else {
-            __init_forked_streams(other_media, media, sp);
+            __init_streams(other_media, media, sp);
         }
-#if 0
-        if (__init_streams(other_media, media, sp))
-            return -1;
-#endif
 
 		/* we are now ready to fire up ICE if so desired and requested */
 		ice_update(other_media->ice_agent, sp);
