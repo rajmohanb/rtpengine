@@ -264,6 +264,10 @@ static void control_ng_incoming(struct obj *obj, str *buf, const endpoint_t *sin
 			errstr = call_fork_answer_ng(dict, resp);
 			g_atomic_int_inc(&cur->fork_media);
 			break;
+		case CSH_LOOKUP("delete leg"):
+			errstr = call_delete_leg_ng(dict, resp);
+			g_atomic_int_inc(&cur->fork_media);
+			break;
 		default:
 			errstr = "Unrecognized command";
 	}

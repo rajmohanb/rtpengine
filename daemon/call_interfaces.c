@@ -2016,14 +2016,6 @@ const char *call_fork_answer_ng(bencode_item_t *input, bencode_item_t *output) {
 
 	monologue->tagtype = TO_TAG;
 
-#if 0
-	errstr = "Invalid monologue tag type";
-	if (monologue->tagtype != FROM_TAG) {
-		__C_DBG("invalid monologue tag type! this can not happen ");
-		goto out;
-	}
-#endif
-
 	chopper = sdp_chopper_new(&sdp);
 	bencode_buffer_destroy_add(output->buffer, (free_func_t) sdp_chopper_destroy, chopper);
 
@@ -2083,6 +2075,49 @@ out:
 	call_ng_free_flags(&flags);
 
 	return errstr;
+}
+
+
+const char *call_delete_leg_ng(bencode_item_t *input, bencode_item_t *output) {
+	str fromtag, totag, viabranch, callid;
+	bencode_item_t *flags, *it;
+	int fatal = 0, delete_delay;
+
+	if (!bencode_dictionary_get_str(input, "call-id", &callid))
+		return "No call-id in message";
+	if (!bencode_dictionary_get_str(input, "from-tag", &fromtag))
+		return "No from-tag in message";
+	if (!bencode_dictionary_get_str(input, "to-tag", &totag))
+		return "No to-tag in message";
+	bencode_dictionary_get_str(input, "via-branch", &viabranch);
+
+    /* TODO: do we care for 'fatal'? */
+	flags = bencode_dictionary_get_expect(input, "flags", BENCODE_LIST);
+	if (flags) {
+		for (it = flags->child; it; it = it->sibling) {
+			if (!bencode_strcmp(it, "fatal"))
+				fatal = 1;
+		}
+	}
+	delete_delay = bencode_dictionary_get_int_str(input, "delete-delay", -1);
+	if (delete_delay == -1) {
+		delete_delay = bencode_dictionary_get_int_str(input, "delete delay", -1);
+		if (delete_delay == -1) {
+			/* legacy support */
+			str s;
+			bencode_dictionary_get_str(input, "delete-delay", &s);
+			if (s.s)
+				delete_delay = str_to_i(&s, -1);
+		}
+	}
+
+	if (call_delete_branch(&callid, &viabranch, &fromtag, &totag, output, delete_delay)) {
+		if (fatal)
+			return "Call-ID not found or tags didn't match";
+		bencode_dictionary_add_string(output, "warning", "Call-ID not found or tags didn't match");
+	}
+
+	return NULL;
 }
 
 

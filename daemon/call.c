@@ -2217,7 +2217,8 @@ init:
             if (__init_streams(media, other_media, NULL))
                 return -1;
         } else {
-            __init_streams(other_media, media, sp);
+            if (__init_streams(other_media, media, sp))
+				return -1;
         }
 
 		/* we are now ready to fire up ICE if so desired and requested */
@@ -3085,6 +3086,125 @@ del_all:
 		call_destroy(c);
 	}
 	goto success;
+
+success_unlock:
+	rwlock_unlock_w(&c->master_lock);
+success:
+	ret = 0;
+	goto out;
+
+err:
+	if (c)
+		rwlock_unlock_w(&c->master_lock);
+	ret = -1;
+	goto out;
+
+out:
+	if (c)
+		obj_put(c);
+	return ret;
+}
+
+static int reinit_forked_streams(struct call_monologue *mlA, struct call_monologue *mlB) {
+	struct call_media *medA, *medB;
+	GList *k, *o;
+
+	k = mlA->medias.head;
+	o = mlB->medias.head;
+
+	for (; k && o; k = k->next) {
+		medA = k->data;
+		medB = o->data;
+
+		if (__init_streams(medA, medB, NULL))
+			return -1;
+		if (__init_streams(medB, medA, NULL))
+			return -1;
+
+		o = o->next;
+	}
+
+	return 1;
+}
+
+int call_delete_fork_branch(const str *callid, const str *branch,
+	const str *fromtag, const str *totag, bencode_item_t *output, int delete_delay)
+{
+	struct call *c;
+	struct call_monologue *from_ml, *ml;
+	int ret;
+
+	if (delete_delay < 0)
+		delete_delay = rtpe_config.delete_delay;
+
+	c = call_get(callid);
+	if (!c) {
+		ilog(LOG_INFO, "Call-ID to delete not found");
+		goto err;
+	}
+
+	from_ml = g_hash_table_lookup(c->tags, fromtag);
+	if (!from_ml) {
+		ilog(LOG_INFO, "From-tag invalid, not deleting");
+		goto err;
+	}
+
+	ml = g_hash_table_lookup(c->tags, totag);
+	if (!from_ml) {
+		ilog(LOG_INFO, "to-tag to delete not found");
+		goto err;
+	}
+
+	if (g_hash_table_size(c->tags) < 3) {
+		ilog(LOG_INFO, "Less than 3 number of monologues, no leg to delete");
+		goto err;
+	}
+
+	if ((ml->tagtype != TO_TAG) || (from_ml->tagtype != FROM_TAG)) {
+		ilog(LOG_INFO, "invalid tag types provided, not deleting leg");
+		goto err;
+	}
+
+	if (from_ml->active_dialogue == ml) {
+		/* setup the streams */
+		if (reinit_forked_streams(ml, from_ml)) {
+			/* TODO */
+			return -1;
+		}
+
+		from_ml->active_dialogue = from_ml->forked_dialogue;
+		from_ml->forked_dialogue = NULL;
+		goto do_delete;
+	} else if (from_ml->forked_dialogue == ml) {
+		from_ml->forked_dialogue = NULL;
+		goto do_delete;
+	} else {
+		ilog(LOG_INFO, "invalid tag provided, not deleting leg");
+		goto err;
+	}
+
+do_delete:
+	if (output)
+		ng_call_stats(c, fromtag, totag, output, NULL);
+
+	media_player_stop(ml->player);
+
+	if (delete_delay > 0) {
+		ilog(LOG_INFO, "Scheduling deletion of call branch '" STR_FORMAT_M "' "
+				"(via-branch '" STR_FORMAT_M "') in %d seconds",
+				STR_FMT_M(&ml->tag), STR_FMT0_M(branch), delete_delay);
+		ml->deleted = rtpe_now.tv_sec + delete_delay;
+		if (!c->ml_deleted || c->ml_deleted > ml->deleted)
+			c->ml_deleted = ml->deleted;
+	}
+	else {
+		ilog(LOG_INFO, "Deleting call branch '" STR_FORMAT_M "' (via-branch '" STR_FORMAT_M "')",
+				STR_FMT_M(&ml->tag), STR_FMT0_M(branch));
+		if (monologue_destroy(ml)) {
+			ilog(LOG_INFO, "monologue_destroy() failed, deleting leg failed");
+		}
+	}
+	goto success_unlock;
 
 success_unlock:
 	rwlock_unlock_w(&c->master_lock);
