@@ -3124,7 +3124,7 @@ static int reinit_forked_streams(struct call_monologue *mlA, struct call_monolog
 		o = o->next;
 	}
 
-	return 1;
+	return 0;
 }
 
 int call_delete_fork_branch(const str *callid, const str *branch,
@@ -3150,7 +3150,16 @@ int call_delete_fork_branch(const str *callid, const str *branch,
 	}
 
 	ml = g_hash_table_lookup(c->tags, totag);
-	if (!from_ml) {
+	if (!ml) {
+		/* debug start */
+		GHashTableIter iter;
+		gpointer key, value;
+
+		g_hash_table_iter_init(&iter, c->tags);
+		while (g_hash_table_iter_next(&iter, &key, &value)) {
+			ilog(LOG_ERR, "Call leg TO_TAG: %s => %s", (char *)key, (char *)value);
+		}
+		/* debug end */
 		ilog(LOG_INFO, "to-tag to delete not found");
 		goto err;
 	}
@@ -3167,8 +3176,9 @@ int call_delete_fork_branch(const str *callid, const str *branch,
 
 	if (from_ml->active_dialogue == ml) {
 		/* setup the streams */
-		if (reinit_forked_streams(ml, from_ml)) {
+		if (reinit_forked_streams(from_ml->forked_dialogue, from_ml)) {
 			/* TODO */
+			ilog(LOG_INFO, "Re-initialization of the forked streams failed");
 			return -1;
 		}
 

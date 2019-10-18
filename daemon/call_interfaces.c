@@ -2111,7 +2111,9 @@ const char *call_delete_leg_ng(bencode_item_t *input, bencode_item_t *output) {
 		}
 	}
 
-	if (call_delete_branch(&callid, &viabranch, &fromtag, &totag, output, delete_delay)) {
+	/* delete immediately */
+	delete_delay = 0;
+	if (call_delete_fork_branch(&callid, &viabranch, &fromtag, &totag, output, delete_delay)) {
 		if (fatal)
 			return "Call-ID not found or tags didn't match";
 		bencode_dictionary_add_string(output, "warning", "Call-ID not found or tags didn't match");
