@@ -1360,10 +1360,11 @@ loop_ok:
 
 // in_srtp and out_srtp are set to point to the SRTP contexts to use
 // sink is set to where to forward the packet to
-static void media_packet_rtcp_demux(struct packet_handler_ctx *phc)
+static void media_packet_rtcp_demux(struct packet_handler_ctx *phc, struct packet_stream *sink_ps)
 {
 	phc->in_srtp = phc->mp.stream;
-	phc->sink = phc->mp.stream->rtp_sink;
+	phc->sink = sink_ps;
+	// phc->sink = phc->mp.stream->rtp_sink;
 	if (!phc->sink && PS_ISSET(phc->mp.stream, RTCP)) {
 		phc->sink = phc->mp.stream->rtcp_sink;
 		phc->rtcp = 1;
@@ -1654,39 +1655,16 @@ out:
 // appropriate locks must be held
 int media_socket_dequeue(struct media_packet *mp, struct packet_stream *sink) {
 	struct codec_packet *p;
-    GList *k, *o;
-    struct call_media *fm; //forked media
-    struct packet_stream *fps; //forked packet stream
 
-    if (mp->media->monologue->forked_dialogue) {
-        k = mp->media->monologue->forked_dialogue->medias.head;
-        //k = mp->media->monologue->active_dialogue->medias.head;
-        fm = k->data;
-        o = fm->streams.head;
-        fps = o->data;
-
-        mutex_lock(&fps->out_lock);
-    }
-
-	while ((p = g_queue_pop_head(&mp->packets_out))) {
+	while ((p = g_queue_pop_head(&mp->packets_out)))
 		send_timer_push(sink->send_timer, p);
-
-		if (mp->media->monologue->forked_dialogue) {
-            send_timer_push(fps->send_timer, p);
-		}
-	    codec_packet_free(p);
-	}
-
-
-    if (mp->media->monologue->forked_dialogue)
-        mutex_unlock(&fps->out_lock);
 
 	return 0;
 }
 
 
 /* called lock-free */
-static int stream_packet(struct packet_handler_ctx *phc) {
+static int stream_packet(struct packet_handler_ctx *phc, struct packet_stream *sink_ps) {
 /**
  * Incoming packets:
  * - sfd->socket.local: the local IP/port on which the packet arrived
@@ -1716,9 +1694,9 @@ static int stream_packet(struct packet_handler_ctx *phc) {
 	phc->mp.stream = phc->mp.sfd->stream;
 	if (G_UNLIKELY(!phc->mp.stream))
 		goto out;
+
 	__C_DBG("Handling packet on: %s:%d", sockaddr_print_buf(&phc->mp.stream->endpoint.address),
 			phc->mp.stream->endpoint.port);
-
 
 	phc->mp.media = phc->mp.stream->media;
 
@@ -1744,7 +1722,7 @@ static int stream_packet(struct packet_handler_ctx *phc) {
 
 
 	// this sets rtcp, in_srtp, out_srtp, and sink
-	media_packet_rtcp_demux(phc);
+	media_packet_rtcp_demux(phc, sink_ps);
 
 	// this set payload_type, ssrc_in, ssrc_out and mp
 	media_packet_rtp(phc);
@@ -1865,14 +1843,22 @@ out:
 static void stream_fd_readable(int fd, void *p, uintptr_t u) {
 	struct stream_fd *sfd = p;
 	char buf[RTP_BUFFER_SIZE];
+	char dupbuf[RTP_BUFFER_SIZE];
 	int ret, iters;
 	int update = 0;
 	struct call *ca;
+
+	struct call_media *m = NULL;
+    struct call_media *fm = NULL; //forked media
+    struct packet_stream *fps = NULL; //forked packet stream
+	int ret1 = 0;
 
 	if (sfd->socket.fd != fd)
 		goto out;
 
 	log_info_stream_fd(sfd);
+
+	m = sfd->stream->media;
 
 	for (iters = 0; ; iters++) {
 #if MAX_RECV_ITERS
@@ -1882,7 +1868,6 @@ static void stream_fd_readable(int fd, void *p, uintptr_t u) {
 			break;
 		}
 #endif
-
 		struct packet_handler_ctx phc;
 		ZERO(phc);
 		phc.mp.sfd = sfd;
@@ -1901,12 +1886,33 @@ static void stream_fd_readable(int fd, void *p, uintptr_t u) {
 		if (ret >= MAX_RTP_PACKET_SIZE)
 			ilog(LOG_WARNING, "UDP packet possibly truncated");
 
+    	if (m->monologue->forked_dialogue) {
+    		GList *k, *o;
+
+			k = m->monologue->forked_dialogue->medias.head;
+			fm = k->data;
+			o = fm->streams.head;
+			fps = o->data;
+
+			memcpy(dupbuf+RTP_BUFFER_HEAD_ROOM, buf+RTP_BUFFER_HEAD_ROOM, ret);
+			ret1 = ret;
+		}
+
 		str_init_len(&phc.s, buf + RTP_BUFFER_HEAD_ROOM, ret);
-		ret = stream_packet(&phc);
+		ret = stream_packet(&phc, sfd->stream->rtp_sink);
 		if (G_UNLIKELY(ret < 0))
 			ilog(LOG_WARNING, "Write error on media socket: %s", strerror(-ret));
 		else if (phc.update)
 			update = 1;
+
+    	if (m->monologue->forked_dialogue) {
+			str_init_len(&phc.s, dupbuf + RTP_BUFFER_HEAD_ROOM, ret1);
+			ret = stream_packet(&phc, fps);
+			if (G_UNLIKELY(ret < 0))
+				ilog(LOG_WARNING, "Write error on media socket: %s", strerror(-ret));
+			else if (phc.update)
+				update = 1;
+		}
 	}
 
 out:

@@ -185,9 +185,7 @@ static int send_timer_send(struct send_timer *st, struct codec_packet *cp) {
 			cp->s.s, cp->s.len, &st->sink->endpoint);
 
 out:
-#if 0 // rajmohan
 	codec_packet_free(cp);
-#endif
 
 	return 0;
 }
