@@ -1849,6 +1849,7 @@ const char *call_fork_media_ng(bencode_item_t *input, bencode_item_t *output) {
 	GQueue streams = G_QUEUE_INIT;
 	struct sdp_chopper *chopper;
 	int ret;
+	GList *i = NULL;
 
 	if (!bencode_dictionary_get_str(input, "sdp", &sdp))
 		return "No SDP body in message";
@@ -1877,11 +1878,15 @@ const char *call_fork_media_ng(bencode_item_t *input, bencode_item_t *output) {
 	/* TODO:
 	 * if call direction is not single way, then bail out. Fork currently works only one way?
 	 */
+	/* get 'from' monologue */
+	for (i = call->monologues.head; i; i = i->next) {
+		monologue = i->data;
+		if (monologue->tagtype == FROM_TAG)
+			break;
+	}
 
-	/* get 'this' monologue */
-	monologue = call_get_mono_dialogue(call, &flags.from_tag, NULL, NULL);
 	errstr = "Invalid dialogue association";
-	if (!monologue) {
+	if (!i) {
 		rwlock_unlock_w(&call->master_lock);
 		obj_put(call);
 		goto out;

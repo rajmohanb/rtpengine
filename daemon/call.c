@@ -2979,7 +2979,7 @@ struct call_monologue *call_get_forked_mono_dialogue(struct call *call, const st
 	__monologue_unkernelize(tt->forked_dialogue);
 	ft->active_dialogue = tt;
 	tt->forked_dialogue = ft;
-	// __fix_other_tags(ft);
+	__fix_other_tags(ft);
 
 done:
 	__monologue_unkernelize(ft);
@@ -3127,6 +3127,21 @@ static int reinit_forked_streams(struct call_monologue *mlA, struct call_monolog
 	return 0;
 }
 
+/* must be called with call->master_lock held in W */
+static int delete_monologue(struct call_monologue *ml) {
+	int pos;
+	struct call *c = ml->call;
+
+	/* XXX: first remove from list maintained by call? */
+
+	g_queue_clear(&ml->medias);
+	g_hash_table_destroy(ml->other_tags);
+	g_hash_table_destroy(ml->media_ids);
+	g_slice_free1(sizeof(*ml),ml);
+
+	return 0;
+}
+
 int call_delete_fork_branch(const str *callid, const str *branch,
 	const str *fromtag, const str *totag, bencode_item_t *output, int delete_delay)
 {
@@ -3212,6 +3227,19 @@ do_delete:
 				STR_FMT_M(&ml->tag), STR_FMT0_M(branch));
 		if (monologue_destroy(ml)) {
 			ilog(LOG_INFO, "monologue_destroy() failed, deleting leg failed");
+		} else {
+			/* XXX deleting of monologue for call leg being deleted, so that
+			 * they are not left dangling. This might not be an issue when
+			 * only couple of legs are added and deleted, but do add up when
+			 * this is done repeatedly.
+			 * Here this scenario is being handled only for immediate 
+			 * deletion case (delete_delay = 0) since In case of delayed
+			 * deletion, this needs to be handled elsewhere. Not taken care.
+			 */
+			delete_monologue(ml);
+
+			/* remove from list as this is not handled in delete_monologue() */
+			g_queue_remove(&c->monologues, ml);
 		}
 	}
 	goto success_unlock;
