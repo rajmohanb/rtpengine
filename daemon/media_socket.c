@@ -1861,6 +1861,7 @@ static void stream_fd_readable(int fd, void *p, uintptr_t u) {
 	m = sfd->stream->media;
 
 	for (iters = 0; ; iters++) {
+        int fm_present = 0;
 #if MAX_RECV_ITERS
 		if (iters >= MAX_RECV_ITERS) {
 			ilog(LOG_ERROR, "Too many packets in UDP receive queue (more than %d), "
@@ -1890,12 +1891,19 @@ static void stream_fd_readable(int fd, void *p, uintptr_t u) {
     		GList *k, *o;
 
 			k = m->monologue->forked_dialogue->medias.head;
-			fm = k->data;
-			o = fm->streams.head;
-			fps = o->data;
+            // do not forward media, till forked recipient's sdp is received
+            if (k) {
+                fm = k->data;
+                o = fm->streams.head;
 
-			memcpy(dupbuf+RTP_BUFFER_HEAD_ROOM, buf+RTP_BUFFER_HEAD_ROOM, ret);
-			ret1 = ret;
+                if (o) {
+                    fps = o->data;
+                    fm_present = 1;
+
+			        memcpy(dupbuf+RTP_BUFFER_HEAD_ROOM, buf+RTP_BUFFER_HEAD_ROOM, ret);
+			        ret1 = ret;
+                }
+            }
 		}
 
 		str_init_len(&phc.s, buf + RTP_BUFFER_HEAD_ROOM, ret);
@@ -1905,7 +1913,7 @@ static void stream_fd_readable(int fd, void *p, uintptr_t u) {
 		else if (phc.update)
 			update = 1;
 
-    	if (m->monologue->forked_dialogue) {
+    	if (m->monologue->forked_dialogue && fm_present) {
 			str_init_len(&phc.s, dupbuf + RTP_BUFFER_HEAD_ROOM, ret1);
 			ret = stream_packet(&phc, fps);
 			if (G_UNLIKELY(ret < 0))

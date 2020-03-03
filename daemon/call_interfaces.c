@@ -1875,9 +1875,8 @@ const char *call_fork_media_ng(bencode_item_t *input, bencode_item_t *output) {
 	if (sdp_streams(&parsed, &streams, &flags))
 		goto out;
 
-	/* TODO:
-	 * if call direction is not single way, then bail out. Fork currently works only one way?
-	 */
+	/* XXX: if call direction is not single way, then bail out. Fork currently works only one way? */
+
 	/* get 'from' monologue */
 	for (i = call->monologues.head; i; i = i->next) {
 		monologue = i->data;
