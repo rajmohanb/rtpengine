@@ -1891,18 +1891,14 @@ const char *call_fork_media_ng(bencode_item_t *input, bencode_item_t *output) {
 		goto out;
 	}
 
-	errstr = "Invalid monologue tag type";
-	if (monologue->tagtype != FROM_TAG) {
-		__C_DBG("invalid monologue tag type! this should not happen ");
-		goto out;
-	}
+	call_bencode_hold_ref(call, output);
 
 	/* create the forked monologue */
 	__C_DBG("create new \"other side\" forked monologue for viabranch "STR_FORMAT, STR_FMT0(&flags.via_branch));
 	fs = __monologue_create(call);
 	monologue->forked_dialogue = fs;
 	fs->active_dialogue = monologue;
-	__monologue_viabranch(fs, &flags.via_branch);
+	__monologue_viabranch(fs, flags.via_branch.s ? &flags.via_branch : NULL);
 
 	chopper = sdp_chopper_new(&sdp);
 	bencode_buffer_destroy_add(output->buffer, (free_func_t) sdp_chopper_destroy, chopper);
@@ -2008,6 +2004,8 @@ const char *call_fork_answer_ng(bencode_item_t *input, bencode_item_t *output) {
 	/* TODO:
 	 * if call direction is not single way, then bail out. Fork currently works only one way?
 	 */
+
+	call_bencode_hold_ref(call, output);
 
 	/* get 'this' monologue */
 	monologue = call_get_forked_mono_dialogue(call, &flags.from_tag, &flags.to_tag, &flags.via_branch);

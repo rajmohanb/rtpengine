@@ -2692,6 +2692,7 @@ void __monologue_tag(struct call_monologue *ml, const str *tag) {
 	call_str_cpy(call, &ml->tag, tag);
 	g_hash_table_insert(call->tags, &ml->tag, ml);
 }
+
 void __monologue_viabranch(struct call_monologue *ml, const str *viabranch) {
 	struct call *call = ml->call;
 
@@ -2965,7 +2966,7 @@ struct call_monologue *call_get_forked_mono_dialogue(struct call *call, const st
 	if (!ft) {
 		/* if we don't have a fromtag monologue yet, we can use a half-complete dialogue
 		 * from the totag if there is one. otherwise we have to create a new one. */
-		ft = tt->active_dialogue;
+		ft = tt->forked_dialogue;
 		if (ft->tag.s)
 			ft = __monologue_create(call);
 	}
@@ -3130,7 +3131,106 @@ static int reinit_forked_streams(struct call_monologue *mlA, struct call_monolog
 /* must be called with call->master_lock held in W */
 static int delete_monologue(struct call_monologue *ml) {
 	int pos;
+	struct call_media *md;
+	GList *k, *o, *l;
+	const struct rtp_payload_type *rtp_pt;
+	struct packet_stream *ps=0;
 	struct call *c = ml->call;
+	struct stream_fd *sfd;
+
+	ilog(LOG_INFO, "Packet stats for deleted leg:");
+	ilog(LOG_INFO, "--- Tag '" STR_FORMAT_M "'%s"STR_FORMAT"%s, created "
+			"%u:%02u ago for branch '" STR_FORMAT_M "', in dialogue with '" STR_FORMAT_M "'",
+			STR_FMT_M(&ml->tag),
+			ml->label.s ? " (label '" : "",
+			STR_FMT(ml->label.s ? &ml->label : &STR_EMPTY),
+			ml->label.s ? "')" : "",
+			(unsigned int) (rtpe_now.tv_sec - ml->created) / 60,
+			(unsigned int) (rtpe_now.tv_sec - ml->created) % 60,
+			STR_FMT_M(&ml->viabranch),
+			ml->active_dialogue ? rtpe_common_config_ptr->log_mark_prefix : "",
+			ml->active_dialogue ? ml->active_dialogue->tag.len : 6,
+			ml->active_dialogue ? ml->active_dialogue->tag.s : "(none)",
+			ml->active_dialogue ? rtpe_common_config_ptr->log_mark_suffix : "");
+
+	for (k = ml->medias.head; k; k = k->next) {
+		md = k->data;
+
+		rtp_pt = __rtp_stats_codec(md);
+#define MLL_PREFIX "------ Media #%u ("STR_FORMAT" over %s) using " /* media log line prefix */
+#define MLL_COMMON /* common args */						\
+			md->index,				\
+			STR_FMT(&md->type),			\
+			md->protocol ? md->protocol->name : "(unknown)"
+		if (!rtp_pt)
+			ilog(LOG_INFO, MLL_PREFIX "unknown codec", MLL_COMMON);
+		else
+			ilog(LOG_INFO, MLL_PREFIX STR_FORMAT, MLL_COMMON,
+					STR_FMT(&rtp_pt->encoding_with_params));
+
+		for (o = md->streams.head; o; o = o->next) {
+			ps = o->data;
+
+			if (PS_ISSET(ps, FALLBACK_RTCP))
+				continue;
+
+			char *addr = sockaddr_print_buf(&ps->endpoint.address);
+			char *local_addr = ps->selected_sfd ? sockaddr_print_buf(&ps->selected_sfd->socket.local.address) : "0.0.0.0";
+
+			ilog(LOG_INFO, "--------- Port %15s:%-5u <> %s%15s:%-5u%s%s, SSRC %s%" PRIx32 "%s, "
+					""UINT64F" p, "UINT64F" b, "UINT64F" e, "UINT64F" ts",
+					local_addr,
+					(unsigned int) (ps->selected_sfd ? ps->selected_sfd->socket.local.port : 0),
+					FMT_M(addr, ps->endpoint.port),
+					(!PS_ISSET(ps, RTP) && PS_ISSET(ps, RTCP)) ? " (RTCP)" : "",
+					FMT_M(ps->ssrc_in ? ps->ssrc_in->parent->h.ssrc : 0),
+					atomic64_get(&ps->stats.packets),
+					atomic64_get(&ps->stats.bytes),
+					atomic64_get(&ps->stats.errors),
+					rtpe_now.tv_sec - atomic64_get(&ps->last_packet));
+
+			statistics_update_totals(ps);
+			send_timer_put(&ps->send_timer);
+		}
+
+		ice_shutdown(&md->ice_agent);
+	}
+
+	media_player_stop(ml->player);
+	media_player_put(&ml->player);
+
+    /* XXX: print SSRC stats and MoS scores? */
+
+#if 0
+	while (c->stream_fds.head) {
+		sfd = g_queue_pop_head(&c->stream_fds);
+
+		if (sfd->stream->media->monologue == ml) {
+			poller_del_item(rtpe_poller, sfd->socket.fd);
+			obj_put(sfd);
+		}
+	}
+#endif
+
+    /* XXX:
+     * the media streams associated with this monologue are deleted when
+     * the entire call is tore down. Is it worth deleting now?
+     */
+	for (l = c->streams.head; l; l = l->next) {
+		ps = l->data;
+
+		if (ps->media->monologue == ml) {
+
+			__unkernelize(ps);
+			dtls_shutdown(ps);
+			ps->selected_sfd = NULL;
+			g_queue_clear(&ps->sfds);
+			crypto_cleanup(&ps->crypto);
+
+			ps->rtp_sink = NULL;
+			ps->rtcp_sink = NULL;
+		}
+	}
 
 	/* XXX: first remove from list maintained by call? */
 
@@ -3233,7 +3333,7 @@ do_delete:
 			 * only couple of legs are added and deleted, but do add up when
 			 * this is done repeatedly.
 			 * Here this scenario is being handled only for immediate 
-			 * deletion case (delete_delay = 0) since In case of delayed
+			 * deletion case (delete_delay = 0). In case of delayed
 			 * deletion, this needs to be handled elsewhere. Not taken care.
 			 */
 			delete_monologue(ml);
