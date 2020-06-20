@@ -1,5 +1,5 @@
 Name:		ngcp-rtpengine
-Version:	6.4.1.1
+Version:	8.5.0.0+0~mr8.5.0.0
 Release:	1%{?dist}
 Summary:	The Sipwise NGCP rtpengine
 
@@ -10,12 +10,14 @@ Source0:	https://github.com/sipwise/rtpengine/archive/mr%{version}/%{name}-%{ver
 Conflicts:	%{name}-kernel < %{version}-%{release}
 
 %global with_transcoding 1
+%{?_unitdir:%define has_systemd_dirs 1}
 
 BuildRequires:	gcc make pkgconfig redhat-rpm-config
 BuildRequires:	glib2-devel libcurl-devel openssl-devel pcre-devel
 BuildRequires:	xmlrpc-c-devel zlib-devel hiredis-devel
 BuildRequires:	libpcap-devel libevent-devel json-glib-devel 
 BuildRequires:	gperf perl-IPC-Cmd
+BuildRequires:  spandsp-devel
 Requires(pre):	shadow-utils
 
 %if 0%{?with_transcoding} > 0
@@ -32,12 +34,14 @@ The Sipwise NGCP rtpengine is a proxy for RTP traffic and other UDP based
 media traffic. It's meant to be used with the Kamailio SIP proxy and forms a
 drop-in replacement for any of the other available RTP and media proxies.
 
-
+%if 0%{?rhel} < 7
+%define iptables_ipv6 1
+%endif
 %package kernel
 Summary:	NGCP rtpengine in-kernel packet forwarding
 Group:		System Environment/Daemons
 BuildRequires:	gcc make redhat-rpm-config iptables-devel
-Requires:	iptables iptables-ipv6
+Requires:	iptables %{?iptables_ipv6:iptables-ipv6}
 Requires:	%{name}%{?_isa} = %{version}-%{release}
 Requires: 	%{name}-dkms = %{version}-%{release}
 
@@ -61,12 +65,17 @@ Requires(preun): dkms
 %description dkms
 %{summary}.
 
+%if 0%{?rhel} >= 8
+%define mysql_devel_pkg mariadb-devel
+%else
+%define mysql_devel_pkg mysql-devel
+%endif
 
 %if 0%{?with_transcoding} > 0
 %package recording
 Summary:        NGCP rtpengine recording daemon packet
 Group:          System Environment/Daemons
-BuildRequires:  gcc make redhat-rpm-config mysql-devel ffmpeg-devel
+BuildRequires:  gcc make redhat-rpm-config %{mysql_devel_pkg} ffmpeg-devel
 
 %description recording
 %{summary}.
@@ -109,11 +118,21 @@ install -D -p -m755 recording-daemon/%{binname}-recording %{buildroot}%{_sbindir
 %endif
 
 ## Install the init.d script and configuration file
+%if 0%{?has_systemd_dirs}
+install -D -p -m755 el/%{binname}.service \
+	%{buildroot}%{_unitdir}/%{binname}.service
+%else
 install -D -p -m755 el/%{binname}.init \
 	%{buildroot}%{_initrddir}/%{name}
+%endif
 %if 0%{?with_transcoding} > 0
+%if 0%{?has_systemd_dirs}
+install -D -p -m755 el/%{binname}-recording.service \
+	%{buildroot}%{_unitdir}/%{binname}-recording.service
+%else
 install -D -p -m755 el/%{binname}-recording.init \
         %{buildroot}%{_initrddir}/%{name}-recording
+%endif
 %endif
 install -D -p -m644 el/%{binname}.sysconfig \
 	%{buildroot}%{_sysconfdir}/sysconfig/%{binname}
@@ -163,7 +182,11 @@ getent passwd %{name} >/dev/null || /usr/sbin/useradd -r -g %{name} \
 
 %post
 if [ $1 -eq 1 ]; then
+%if 0%{?has_systemd_dirs}
+        systemctl daemon-reload
+%else
         /sbin/chkconfig --add %{name} || :
+%endif
 fi
 
 
@@ -187,10 +210,15 @@ true
 
 %preun
 if [ $1 = 0 ] ; then
+%if 0%{?has_systemd_dirs}
+        systemctl stop %{binname}.service
+        systemctl disable %{binname}.service
+
+%else
         /sbin/service %{name} stop >/dev/null 2>&1
         /sbin/chkconfig --del %{name}
+%endif
 fi
-
 
 %preun dkms
 # Remove from DKMS registry
@@ -204,7 +232,11 @@ true
 # CLI (command line interface)
 %{_sbindir}/%{binname}-ctl
 # init.d script and configuration file
+%if 0%{?has_systemd_dirs}
+%{_unitdir}/%{binname}.service
+%else
 %{_initrddir}/%{name}
+%endif
 %config(noreplace) %{_sysconfdir}/sysconfig/%{binname}
 %attr(0750,%{name},%{name}) %dir %{_sharedstatedir}/%{name}
 # default config
@@ -229,7 +261,11 @@ true
 # Recording daemon
 %{_sbindir}/%{binname}-recording
 # Init script
+%if 0%{?has_systemd_dirs}
+%{_unitdir}/%{binname}-recording.service
+%else
 %{_initrddir}/%{name}-recording
+%endif
 # Sysconfig
 %config(noreplace) %{_sysconfdir}/sysconfig/%{binname}-recording
 # Default config

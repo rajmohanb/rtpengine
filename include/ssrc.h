@@ -31,8 +31,8 @@ struct ssrc_hash {
 	rwlock_t lock;
 	ssrc_create_func_t create_func;
 	void *uptr;
-	volatile struct ssrc_entry *cache; // last used entry
-	volatile struct ssrc_entry *precreat; // next used entry
+	struct ssrc_entry *cache; // last used entry
+	struct ssrc_entry *precreat; // next used entry
 };
 struct payload_tracker {
 	mutex_t lock;
@@ -46,6 +46,7 @@ struct payload_tracker {
 struct ssrc_ctx {
 	struct ssrc_entry_call *parent;
 	struct payload_tracker tracker;
+	void *ref; // points to the call_monologue but is opaque
 
 	// XXX lock this?
 	u_int64_t srtp_index,
@@ -62,6 +63,8 @@ struct ssrc_ctx {
 		 duplicates,
 		 last_seq, // XXX dup with srtp_index?
 		 last_ts;
+
+	struct timeval next_rtcp; // for self-generated RTCP reports
 };
 
 struct ssrc_stats_block {
@@ -186,7 +189,7 @@ struct ssrc_hash *create_ssrc_hash_call(void);
 
 void *get_ssrc(u_int32_t, struct ssrc_hash * /* , int *created */); // creates new entry if not found
 
-struct ssrc_ctx *get_ssrc_ctx(u_int32_t, struct ssrc_hash *, enum ssrc_dir); // creates new entry if not found
+struct ssrc_ctx *get_ssrc_ctx(u_int32_t, struct ssrc_hash *, enum ssrc_dir, void *ref); // creates new entry if not found
 
 
 void ssrc_sender_report(struct call_media *, const struct ssrc_sender_report *, const struct timeval *);
@@ -202,6 +205,23 @@ void ssrc_voip_metrics(struct call_media *m, const struct ssrc_xr_voip_metrics *
 
 void payload_tracker_init(struct payload_tracker *t);
 void payload_tracker_add(struct payload_tracker *, int);
+
+
+INLINE void ssrc_ctx_put(struct ssrc_ctx **c) {
+	if (!c || !*c)
+		return;
+	obj_put(&(*c)->parent->h);
+	*c = NULL;
+}
+INLINE struct ssrc_ctx *ssrc_ctx_get(struct ssrc_ctx *c) {
+	if (!c)
+		return NULL;
+	obj_hold(&c->parent->h);
+	return c;
+}
+INLINE void ssrc_ctx_hold(struct ssrc_ctx *c) {
+	ssrc_ctx_get(c);
+}
 
 
 

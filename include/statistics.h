@@ -2,6 +2,7 @@
 #define STATISTICS_H_
 
 #include "aux.h"
+#include "bencode.h"
 
 struct call;
 struct packet_stream;
@@ -18,6 +19,7 @@ struct stats {
 	atomic64			offers;
 	atomic64			answers;
 	atomic64			deletes;
+	atomic64			transcoded_media;
 };
 
 
@@ -79,6 +81,31 @@ struct rtp_stats {
 	atomic64		in_tos_tclass;
 };
 
+struct codec_stats {
+	char			*chain;
+	char			*chain_brief;
+	int			num_transcoders;
+	// 3 entries: [0] and [1] for per-second stats, [2] for total count
+	// last_tv_sec keeps track of rollovers
+	int			last_tv_sec[2];
+	atomic64		packets_input[3];
+	atomic64		bytes_input[3];
+	atomic64		pcm_samples[3];
+};
+
+struct stats_metric {
+	char *label;
+	char *descr;
+	char *value_short;
+	char *value_long;
+	int64_t int_value;
+	int is_bracket;
+	int is_close_bracket;
+	int is_brace;
+	int is_follow_up;
+	int is_int;
+};
+
 
 struct call_stats {
 	time_t		last_packet;
@@ -90,10 +117,17 @@ extern struct totalstats       rtpe_totalstats_interval;
 extern mutex_t		       rtpe_totalstats_lastinterval_lock;
 extern struct totalstats       rtpe_totalstats_lastinterval;
 
+extern mutex_t rtpe_codec_stats_lock;
+extern GHashTable *rtpe_codec_stats;
+
 void statistics_update_oneway(struct call *);
 void statistics_update_foreignown_dec(struct call *);
 void statistics_update_foreignown_inc(struct call* c);
 void statistics_update_totals(struct packet_stream *) ;
+
+GQueue *statistics_gather_metrics(void);
+void statistics_free_metrics(GQueue **);
+const char *statistics_ng(bencode_item_t *input, bencode_item_t *output);
 
 void statistics_init(void);
 

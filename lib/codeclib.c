@@ -4,6 +4,7 @@
 #include <libavfilter/avfilter.h>
 #include <libavutil/opt.h>
 #include <glib.h>
+#include <arpa/inet.h>
 #ifdef HAVE_BCG729
 #include <bcg729/encoder.h>
 #include <bcg729/decoder.h>
@@ -14,6 +15,7 @@
 #include "resample.h"
 #include "rtplib.h"
 #include "bitstr.h"
+#include "dtmflib.h"
 
 
 
@@ -40,6 +42,9 @@ static packetizer_f packetizer_amr;
 static format_init_f opus_init;
 static set_enc_options_f opus_set_enc_options;
 
+static set_enc_options_f ilbc_set_enc_options;
+static set_dec_options_f ilbc_set_dec_options;
+
 static set_enc_options_f amr_set_enc_options;
 static set_dec_options_f amr_set_dec_options;
 
@@ -52,6 +57,10 @@ static int avc_encoder_input(encoder_t *enc, AVFrame **frame);
 static void avc_encoder_close(encoder_t *enc);
 
 static int amr_decoder_input(decoder_t *dec, const str *data, GQueue *out);
+static int ilbc_decoder_input(decoder_t *dec, const str *data, GQueue *out);
+
+static const char *dtmf_decoder_init(decoder_t *, const str *);
+static int dtmf_decoder_input(decoder_t *dec, const str *data, GQueue *out);
 
 
 
@@ -65,6 +74,15 @@ static const codec_type_t codec_type_avcodec = {
 	.encoder_input = avc_encoder_input,
 	.encoder_close = avc_encoder_close,
 };
+static const codec_type_t codec_type_ilbc = {
+	.def_init = avc_def_init,
+	.decoder_init = avc_decoder_init,
+	.decoder_input = ilbc_decoder_input,
+	.decoder_close = avc_decoder_close,
+	.encoder_init = avc_encoder_init,
+	.encoder_input = avc_encoder_input,
+	.encoder_close = avc_encoder_close,
+};
 static const codec_type_t codec_type_amr = {
 	.def_init = avc_def_init,
 	.decoder_init = avc_decoder_init,
@@ -73,6 +91,10 @@ static const codec_type_t codec_type_amr = {
 	.encoder_init = avc_encoder_init,
 	.encoder_input = avc_encoder_input,
 	.encoder_close = avc_encoder_close,
+};
+static const codec_type_t codec_type_dtmf = {
+	.decoder_init = dtmf_decoder_init,
+	.decoder_input = dtmf_decoder_input,
 };
 
 #ifdef HAVE_BCG729
@@ -169,9 +191,33 @@ static codec_def_t __codec_defs[] = {
 		.media_type = MT_AUDIO,
 		.codec_type = &codec_type_avcodec,
 	},
+	{
+		.rtpname = "G729a",
+		.avcodec_id = AV_CODEC_ID_G729,
+		.clockrate_mult = 1,
+		.default_clockrate = 8000,
+		.default_channels = 1,
+		.default_ptime = 20,
+		.packetizer = packetizer_passthrough,
+		.media_type = MT_AUDIO,
+		.codec_type = &codec_type_avcodec,
+	},
 #else
 	{
 		.rtpname = "G729",
+		.avcodec_id = -1,
+		.clockrate_mult = 1,
+		.default_clockrate = 8000,
+		.default_channels = 1,
+		.default_ptime = 20,
+		.default_fmtp = "annexb=no",
+		.packetizer = packetizer_g729,
+		.bits_per_sample = 1, // 10 ms frame has 80 samples and encodes as (max) 10 bytes = 80 bits
+		.media_type = MT_AUDIO,
+		.codec_type = &codec_type_bcg729,
+	},
+	{
+		.rtpname = "G729a",
 		.avcodec_id = -1,
 		.clockrate_mult = 1,
 		.default_clockrate = 8000,
@@ -210,11 +256,14 @@ static codec_def_t __codec_defs[] = {
 		.avcodec_id = AV_CODEC_ID_ILBC,
 		.default_clockrate = 8000,
 		.default_channels = 1,
-		.default_ptime = 20,
+		.default_ptime = 30,
+		.default_fmtp = "mode=30",
 		//.default_bitrate = 15200,
 		.packetizer = packetizer_passthrough,
 		.media_type = MT_AUDIO,
-		.codec_type = &codec_type_avcodec,
+		.codec_type = &codec_type_ilbc,
+		.set_enc_options = ilbc_set_enc_options,
+		.set_dec_options = ilbc_set_dec_options,
 	},
 	{
 		.rtpname = "opus",
@@ -334,16 +383,19 @@ static codec_def_t __codec_defs[] = {
 		.set_enc_options = amr_set_enc_options,
 		.set_dec_options = amr_set_dec_options,
 	},
-	// pseudo-codecs
 	{
 		.rtpname = "telephone-event",
 		.avcodec_id = -1,
 		.packetizer = packetizer_passthrough,
 		.media_type = MT_AUDIO,
-		.pseudocodec = 1,
+		.supplemental = 1,
 		.dtmf = 1,
-		.default_clockrate = 8000,
+		.default_clockrate = 1, // special handling
 		.default_channels = 1,
+		.default_fmtp = "0-15",
+		.codec_type = &codec_type_dtmf,
+		.support_encoding = 1,
+		.support_decoding = 1,
 	},
 	// for file reading and writing
 	{
@@ -392,18 +444,6 @@ const codec_def_t *codec_find_by_av(enum AVCodecID id) {
 	return g_hash_table_lookup(codecs_ht_by_av, GINT_TO_POINTER(id));
 }
 
-enum media_type codec_get_type(const str *type) {
-	if (!type || !type->len)
-		return MT_UNKNOWN;
-	if (!str_cmp(type, "audio"))
-		return MT_AUDIO;
-	if (!str_cmp(type, "video"))
-		return MT_VIDEO;
-	if (!str_cmp(type, "image"))
-		return MT_IMAGE;
-	return MT_OTHER;
-}
-
 
 
 
@@ -423,7 +463,7 @@ static const char *avc_decoder_init(decoder_t *dec, const str *fmtp) {
 
 	int i = avcodec_open2(dec->u.avc.avcctx, codec, NULL);
 	if (i) {
-		ilog(LOG_ERR, "Error returned from libav: %s", av_error(i));
+		ilog(LOG_ERR | LOG_FLAG_LIMIT, "Error returned from libav: %s", av_error(i));
 		return "failed to open codec context";
 	}
 
@@ -436,11 +476,11 @@ static const char *avc_decoder_init(decoder_t *dec, const str *fmtp) {
 
 
 
-decoder_t *decoder_new_fmt(const codec_def_t *def, int clockrate, int channels, const format_t *resample_fmt) {
-	return decoder_new_fmtp(def, clockrate, channels, resample_fmt, NULL);
+decoder_t *decoder_new_fmt(const codec_def_t *def, int clockrate, int channels, int ptime, const format_t *resample_fmt) {
+	return decoder_new_fmtp(def, clockrate, channels, ptime, resample_fmt, NULL);
 }
 
-decoder_t *decoder_new_fmtp(const codec_def_t *def, int clockrate, int channels, const format_t *resample_fmt,
+decoder_t *decoder_new_fmtp(const codec_def_t *def, int clockrate, int channels, int ptime, const format_t *resample_fmt,
 		const str *fmtp)
 {
 	const char *err;
@@ -462,6 +502,10 @@ decoder_t *decoder_new_fmtp(const codec_def_t *def, int clockrate, int channels,
 	ret->out_format = ret->in_format;
 	if (resample_fmt)
 		ret->out_format = *resample_fmt;
+	if (ptime > 0)
+		ret->ptime = ptime;
+	else
+		ret->ptime = def->default_ptime;
 
 	err = def->codec_type->decoder_init(ret, fmtp);
 	if (err)
@@ -478,7 +522,7 @@ err:
 	if (ret)
 		decoder_close(ret);
 	if (err)
-		ilog(LOG_ERR, "Error creating media decoder for codec %s: %s", def->rtpname, err);
+		ilog(LOG_ERR | LOG_FLAG_LIMIT, "Error creating media decoder for codec %s: %s", def->rtpname, err);
 	return NULL;
 }
 
@@ -603,7 +647,7 @@ static int avc_decoder_input(decoder_t *dec, const str *data, GQueue *out) {
 err:
 	ilog(LOG_ERR | LOG_FLAG_LIMIT, "Error decoding media packet: %s", err);
 	if (av_ret)
-		ilog(LOG_ERR, "Error returned from libav: %s", av_error(av_ret));
+		ilog(LOG_ERR | LOG_FLAG_LIMIT, "Error returned from libav: %s", av_error(av_ret));
 	av_frame_free(&frame);
 	return -1;
 }
@@ -617,6 +661,8 @@ int decoder_input_data(decoder_t *dec, const str *data, unsigned long ts,
 		return -1;
 	if (!data || !data->s || !data->len)
 		return 0;
+
+	ts *= dec->def->clockrate_mult;
 
 	dbg("%p dec pts %llu rtp_ts %llu incoming ts %lu", dec, (unsigned long long) dec->pts,
 			(unsigned long long) dec->rtp_ts, (unsigned long) ts);
@@ -633,7 +679,6 @@ int decoder_input_data(decoder_t *dec, const str *data, unsigned long ts,
 					"%lu to %lu",
 					dec->rtp_ts, ts);
 			// XXX handle lost packets here if timestamps don't line up?
-			dec->pts += dec->in_format.clockrate;
 		}
 		else
 			dec->pts += shift_ts;
@@ -723,7 +768,7 @@ void codeclib_init(int print) {
 	avformat_network_init();
 	av_log_set_callback(avlog_ilog);
 
-	codecs_ht = g_hash_table_new(str_hash, str_equal);
+	codecs_ht = g_hash_table_new(str_case_hash, str_case_equal);
 	codecs_ht_by_av = g_hash_table_new(g_direct_hash, g_direct_equal);
 
 	for (int i = 0; i < G_N_ELEMENTS(__codec_defs); i++) {
@@ -757,9 +802,6 @@ void codeclib_init(int print) {
 
 		if (def->codec_type && def->codec_type->def_init)
 			def->codec_type->def_init(def);
-
-		if (def->pseudocodec)
-			continue;
 
 		if (print) {
 			if (def->support_encoding && def->support_decoding) {
@@ -904,6 +946,12 @@ void *packet_sequencer_force_next_packet(packet_sequencer_t *ps) {
 	return __packet_sequencer_next_packet(ps, 0);
 }
 
+int packet_sequencer_next_ok(packet_sequencer_t *ps) {
+	if (g_tree_lookup(ps->packets, GINT_TO_POINTER(ps->seq)))
+		return 1;
+	return 0;
+}
+
 int packet_sequencer_insert(packet_sequencer_t *ps, seq_packet_t *p) {
 	int ret = 0;
 
@@ -932,7 +980,8 @@ int packet_sequencer_insert(packet_sequencer_t *ps, seq_packet_t *p) {
 	ilog(LOG_DEBUG, "Seq reset detected: expected seq %i, received seq %i", ps->seq, p->seq);
 	ps->seq = p->seq;
 	ret = 1;
-	// seq ok - fall thru
+	// seq ok - fall through
+	g_tree_clear(ps->packets);
 seq_ok:
 	if (g_tree_lookup(ps->packets, GINT_TO_POINTER(p->seq)))
 		return -1;
@@ -991,7 +1040,7 @@ static const char *avc_encoder_init(encoder_t *enc, const str *fmtp) {
 
 	int i = avcodec_open2(enc->u.avc.avcctx, enc->u.avc.codec, NULL);
 	if (i) {
-		ilog(LOG_ERR, "Error returned from libav: %s", av_error(i));
+		ilog(LOG_ERR | LOG_FLAG_LIMIT, "Error returned from libav: %s", av_error(i));
 		return "failed to open output context";
 	}
 
@@ -1024,7 +1073,7 @@ int encoder_config_fmtp(encoder_t *enc, const codec_def_t *def, int bitrate, int
 	enc->ptime = ptime / def->clockrate_mult;
 	enc->bitrate = bitrate;
 
-	err = def->codec_type->encoder_init(enc, fmtp);
+	err = def->codec_type->encoder_init ? def->codec_type->encoder_init(enc, fmtp) : 0;
 	if (err)
 		goto err;
 
@@ -1032,19 +1081,24 @@ int encoder_config_fmtp(encoder_t *enc, const codec_def_t *def, int bitrate, int
 
 // output frame and fifo
 	enc->frame = av_frame_alloc();
-	enc->frame->nb_samples = enc->samples_per_frame ? : 256;
-	enc->frame->format = enc->actual_format.format;
-	enc->frame->sample_rate = enc->actual_format.clockrate;
-	enc->frame->channel_layout = av_get_default_channel_layout(enc->actual_format.channels);
-	//if (!enc->frame->channel_layout)
-		//enc->frame->channel_layout = av_get_default_channel_layout(enc->u.avc.avcctx->channels);
-	if (av_frame_get_buffer(enc->frame, 0) < 0)
-		abort();
 
-	enc->fifo = av_audio_fifo_alloc(enc->frame->format, enc->actual_format.channels,
-			enc->frame->nb_samples);
+	if (enc->actual_format.format != -1 && enc->actual_format.clockrate > 0) {
+		enc->frame->nb_samples = enc->samples_per_frame ? : 256;
+		enc->frame->format = enc->actual_format.format;
+		enc->frame->sample_rate = enc->actual_format.clockrate;
+		enc->frame->channel_layout = av_get_default_channel_layout(enc->actual_format.channels);
+		//if (!enc->frame->channel_layout)
+			//enc->frame->channel_layout = av_get_default_channel_layout(enc->u.avc.avcctx->channels);
+		if (av_frame_get_buffer(enc->frame, 0) < 0)
+			abort();
 
-	ilog(LOG_DEBUG, "Initialized encoder with frame size %u samples", enc->frame->nb_samples);
+		enc->fifo = av_audio_fifo_alloc(enc->frame->format, enc->actual_format.channels,
+				enc->frame->nb_samples);
+
+		ilog(LOG_DEBUG, "Initialized encoder with frame size %u samples", enc->frame->nb_samples);
+	}
+	else
+		ilog(LOG_DEBUG, "Initialized encoder without frame buffer");
 
 
 done:
@@ -1156,7 +1210,7 @@ static int avc_encoder_input(encoder_t *enc, AVFrame **frame) {
 
 err:
 	if (av_ret)
-		ilog(LOG_ERR, "Error returned from libav: %s", av_error(av_ret));
+		ilog(LOG_ERR | LOG_FLAG_LIMIT, "Error returned from libav: %s", av_error(av_ret));
 	return -1;
 }
 
@@ -1166,6 +1220,9 @@ int encoder_input_data(encoder_t *enc, AVFrame *frame,
 	enc->avpkt.size = 0;
 
 	while (1) {
+		if (!enc->def->codec_type->encoder_input)
+			break;
+
 		int ret = enc->def->codec_type->encoder_input(enc, &frame);
 		if (ret < 0)
 			return -1;
@@ -1211,10 +1268,6 @@ static int encoder_fifo_flush(encoder_t *enc,
 int encoder_input_fifo(encoder_t *enc, AVFrame *frame,
 		int (*callback)(encoder_t *, void *u1, void *u2), void *u1, void *u2)
 {
-	// fix up output pts
-	if (av_audio_fifo_size(enc->fifo) == 0)
-		enc->fifo_pts = frame->pts;
-
 	if (av_audio_fifo_write(enc->fifo, (void **) frame->extended_data, frame->nb_samples) < 0)
 		return -1;
 
@@ -1311,10 +1364,106 @@ static void opus_init(struct rtp_payload_type *pt) {
 static void opus_set_enc_options(encoder_t *enc, const str *fmtp) {
 	int ret;
 	if (enc->ptime)
-		if ((ret = av_opt_set_int(enc->u.avc.avcctx, "frame_duration", enc->ptime, 0)))
+		if ((ret = av_opt_set_int(enc->u.avc.avcctx, "frame_duration", enc->ptime,
+						AV_OPT_SEARCH_CHILDREN)))
 			ilog(LOG_WARN, "Failed to set Opus frame_duration option to %i: %s",
 					enc->ptime, av_error(ret));
 	// XXX additional opus options
+}
+
+static int ilbc_mode(int ptime, const str *fmtp, const char *direction) {
+	int mode = 0;
+
+	if (fmtp) {
+		if (!str_cmp(fmtp, "mode=20")) {
+			mode = 20;
+			ilog(LOG_DEBUG, "Setting iLBC %s mode to 20 ms based on fmtp", direction);
+		}
+		else if (!str_cmp(fmtp, "mode=30")) {
+			mode = 30;
+			ilog(LOG_DEBUG, "Setting iLBC %s mode to 30 ms based on fmtp", direction);
+		}
+	}
+
+	if (!mode) {
+		switch (ptime) {
+			case 20:
+			case 40:
+			case 60:
+			case 80:
+			case 100:
+			case 120:
+				mode = 20;
+				ilog(LOG_DEBUG, "Setting iLBC %s mode to 20 ms based on ptime %i",
+						direction, ptime);
+				break;
+			case 30:
+			case 90:
+				mode = 30;
+				ilog(LOG_DEBUG, "Setting iLBC %s mode to 30 ms based on ptime %i",
+						direction, ptime);
+				break;
+		}
+	}
+
+	if (!mode) {
+		mode = 20;
+		ilog(LOG_WARNING, "No iLBC %s mode specified, setting to 20 ms", direction);
+	}
+
+	return mode;
+}
+
+static void ilbc_set_enc_options(encoder_t *enc, const str *fmtp) {
+	int ret;
+	int mode = ilbc_mode(enc->ptime, fmtp, "encoder");
+
+	if ((ret = av_opt_set_int(enc->u.avc.avcctx, "mode", mode,
+					AV_OPT_SEARCH_CHILDREN)))
+		ilog(LOG_WARN, "Failed to set iLBC mode option to %i: %s",
+				mode, av_error(ret));
+}
+
+static void ilbc_set_dec_options(decoder_t *dec, const str *fmtp) {
+	int mode = ilbc_mode(dec->ptime, fmtp, "decoder");
+	if (mode == 20)
+		dec->u.avc.avcctx->block_align = 38;
+	else if (mode == 30)
+		dec->u.avc.avcctx->block_align = 50;
+	else
+		ilog(LOG_WARN, "Unsupported iLBC mode %i", mode);
+}
+
+static int ilbc_decoder_input(decoder_t *dec, const str *data, GQueue *out) {
+	int mode = 0, block_align = 0;
+	static const str mode_20 = STR_CONST_INIT("mode=20");
+	static const str mode_30 = STR_CONST_INIT("mode=30");
+	const str *fmtp;
+
+	if (data->len % 50 == 0) {
+		mode = 30;
+		block_align = 50;
+		fmtp = &mode_30;
+	}
+	else if (data->len % 38 == 0) {
+		mode = 20;
+		block_align = 38;
+		fmtp = &mode_20;
+	}
+	else
+		ilog(LOG_WARNING | LOG_FLAG_LIMIT, "iLBC received %i bytes packet, does not match "
+				"one of the block sizes", (int) data->len);
+
+	if (block_align && dec->u.avc.avcctx->block_align != block_align) {
+		ilog(LOG_INFO | LOG_FLAG_LIMIT, "iLBC decoder set to %i bytes blocks, but received packet "
+				"of %i bytes, therefore resetting decoder and switching to %i bytes "
+				"block mode (%i ms mode)",
+				(int) dec->u.avc.avcctx->block_align, (int) data->len, block_align, mode);
+		avc_decoder_close(dec);
+		avc_decoder_init(dec, fmtp);
+	}
+
+	return avc_decoder_input(dec, data, out);
 }
 
 
@@ -1643,7 +1792,7 @@ static int bcg729_encoder_input(encoder_t *enc, AVFrame **frame) {
 		return 0;
 
 	if ((*frame)->nb_samples != 80) {
-		ilog(LOG_ERR, "bcg729: input %u samples instead of 80", (*frame)->nb_samples);
+		ilog(LOG_ERR | LOG_FLAG_LIMIT, "bcg729: input %u samples instead of 80", (*frame)->nb_samples);
 		return -1;
 	}
 
@@ -1713,3 +1862,65 @@ static int packetizer_g729(AVPacket *pkt, GString *buf, str *input_output, encod
 	return buf->len >= 2 ? 1 : 0;
 }
 #endif
+
+
+static const char *dtmf_decoder_init(decoder_t *dec, const str *fmtp) {
+	dec->u.dtmf.event = -1;
+	return NULL;
+}
+
+static int dtmf_decoder_input(decoder_t *dec, const str *data, GQueue *out) {
+	struct telephone_event_payload *dtmf;
+	if (data->len < sizeof(*dtmf)) {
+		ilog(LOG_WARN | LOG_FLAG_LIMIT, "Short DTMF event packet (len %u)", data->len);
+		return -1;
+	}
+	dtmf = (void *) data->s;
+
+	// init if we need to
+	if (dtmf->event != dec->u.dtmf.event || dec->rtp_ts != dec->u.dtmf.start_ts) {
+		ZERO(dec->u.dtmf);
+		dec->u.dtmf.event = dtmf->event;
+		dec->u.dtmf.start_ts = dec->rtp_ts;
+		ilog(LOG_DEBUG, "New DTMF event starting: %u at TS %lu", dtmf->event, dec->rtp_ts);
+	}
+
+	unsigned long duration = ntohs(dtmf->duration);
+	unsigned long frame_ts = dec->rtp_ts - dec->u.dtmf.start_ts + dec->u.dtmf.duration;
+	long num_samples = duration - dec->u.dtmf.duration;
+
+	ilog(LOG_DEBUG, "Generate DTMF samples for event %u, start TS %lu, TS now %lu, frame TS %lu, "
+			"duration %lu, "
+			"old duration %lu, num samples %li",
+			dtmf->event, dec->u.dtmf.start_ts, dec->rtp_ts, frame_ts,
+			duration, dec->u.dtmf.duration, num_samples);
+
+	if (num_samples <= 0)
+		return 0;
+	if (num_samples > dec->in_format.clockrate) {
+		ilog(LOG_ERR, "Cannot generate %li DTMF samples (clock rate %u)", num_samples,
+				dec->in_format.clockrate);
+		return -1;
+	}
+
+	// synthesise PCM
+	// first get our frame and figure out how many samples we need, and the start offset
+	AVFrame *frame = av_frame_alloc();
+	frame->nb_samples = num_samples;
+	frame->format = AV_SAMPLE_FMT_S16;
+	frame->sample_rate = dec->in_format.clockrate;
+	frame->channel_layout = AV_CH_LAYOUT_MONO;
+	frame->pts = frame_ts;
+	if (av_frame_get_buffer(frame, 0) < 0)
+		abort();
+
+	// fill samples
+	dtmf_samples(frame->extended_data[0], frame_ts, frame->nb_samples, dtmf->event,
+			dtmf->volume, dec->in_format.clockrate);
+
+	g_queue_push_tail(out, frame);
+
+	dec->u.dtmf.duration = duration;
+
+	return 0;
+}

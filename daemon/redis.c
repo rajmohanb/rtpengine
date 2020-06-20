@@ -293,6 +293,8 @@ err2:
 			endpoint_print_buf(&r->endpoint), r->ctx->errstr);
 		return -1;
 	}
+	redisFree(r->ctx);
+	r->ctx = NULL;
 err:
 	rlog(LOG_ERR, "Failed to connect to Redis %s",
 		endpoint_print_buf(&r->endpoint));
@@ -571,6 +573,10 @@ static int redis_notify(void) {
 	return 0;
 }
 
+static void redis_disconnect(void) {
+	rtpe_redis_notify_async_context = NULL;
+}
+
 void redis_notify_loop(void *d) {
 	int seconds = 1, redis_notify_return = 0;
 	time_t next_run = rtpe_now.tv_sec;
@@ -613,7 +619,8 @@ void redis_notify_loop(void *d) {
 
 		next_run = rtpe_now.tv_sec + seconds;
 
-		if (redis_check_conn(r) == REDIS_STATE_RECONNECTED || redis_notify_return < 0) {
+		if (redis_check_conn(r) == REDIS_STATE_CONNECTED || redis_notify_return < 0) {
+			redis_disconnect();
 			// alloc new redis async context upon redis breakdown
 			if (redis_async_context_alloc() < 0) {
 				continue;
@@ -629,6 +636,7 @@ void redis_notify_loop(void *d) {
 
 	// free async context
 	redisAsyncDisconnect(rtpe_redis_notify_async_context);
+	redis_disconnect();
 }
 
 struct redis *redis_new(const endpoint_t *ep, int db, const char *auth,
@@ -672,6 +680,7 @@ err:
 static void redis_close(struct redis *r) {
 	if (r->ctx)
 		redisFree(r->ctx);
+	r->ctx = NULL;
 	mutex_destroy(&r->lock);
 	g_slice_free1(sizeof(*r), r);
 }
@@ -712,7 +721,7 @@ static int redis_check_conn(struct redis *r) {
 		ilog(LOG_INFO, "RE-Establishing connection for Redis server %s",endpoint_print_buf(&r->endpoint));
 
 	// try redis connection
-	if (redisCommandNR(r->ctx, "PING") == 0) {
+	if (r->ctx && redisCommandNR(r->ctx, "PING") == 0) {
 		// redis is connected
 		return REDIS_STATE_CONNECTED;
 	}
@@ -741,7 +750,7 @@ static int redis_check_conn(struct redis *r) {
 	}
 
 	// redis is re-connected
-	return REDIS_STATE_RECONNECTED;
+	return REDIS_STATE_CONNECTED;
 }
 
 /* called with r->lock held and c->master_lock held */
@@ -1079,7 +1088,7 @@ err:
 	return -1;
 }
 static int redis_hash_get_sdes_params(GQueue *out, const struct redis_hash *h, const char *k) {
-	char key[32], tagkey[32];
+	char key[32], tagkey[64];
 	const char *kk = k;
 	unsigned int tag;
 	unsigned int iter = 0;
@@ -1088,7 +1097,7 @@ static int redis_hash_get_sdes_params(GQueue *out, const struct redis_hash *h, c
 		snprintf(tagkey, sizeof(tagkey), "%s_tag", kk);
 		if (redis_hash_get_unsigned(&tag, h, tagkey))
 			break;
-		struct crypto_params_sdes *cps = g_slice_alloc0(sizeof(cps));
+		struct crypto_params_sdes *cps = g_slice_alloc0(sizeof(*cps));
 		cps->tag = tag;
 		int ret = redis_hash_get_sdes_params1(&cps->params, h, kk);
 		if (ret) {
@@ -1098,6 +1107,7 @@ static int redis_hash_get_sdes_params(GQueue *out, const struct redis_hash *h, c
 			return -1;
 		}
 
+		g_queue_push_tail(out, cps);
 		snprintf(key, sizeof(key), "%s-%u", k, iter++);
 		kk = key;
 	}
@@ -1273,6 +1283,9 @@ static int json_medias(struct call *c, struct redis_list *medias, JsonReader *ro
 		if (redis_hash_get_str(&s, rh, "type"))
 			return -1;
 		call_str_cpy(c, &med->type, &s);
+		med->type_id = codec_get_type(&med->type);
+		if (!redis_hash_get_str(&s, rh, "format_str"))
+			call_str_cpy(c, &med->format_str, &s);
 		if (!redis_hash_get_str(&s, rh, "media_id"))
 			call_str_cpy(c, &med->media_id, &s);
 
@@ -1442,7 +1455,7 @@ static int json_link_medias(struct call *c, struct redis_list *medias,
 		for (GList *l = other_ml->medias.head; l; l = l->next) {
 			struct call_media *other_m = l->data;
 			if (other_m->index == med->index) {
-				codec_handlers_update(med, other_m, NULL);
+				codec_handlers_update(med, other_m, NULL, NULL);
 				break;
 			}
 		}
@@ -2026,6 +2039,8 @@ char* redis_encode_json(struct call *c) {
 				JSON_SET_SIMPLE("tag","%u",media->monologue->unique_id);
 				JSON_SET_SIMPLE("index","%u",media->index);
 				JSON_SET_SIMPLE_STR("type",&media->type);
+				if (media->format_str.s)
+					JSON_SET_SIMPLE_STR("format_str",&media->format_str);
 				if (media->media_id.s)
 					JSON_SET_SIMPLE_STR("media_id",&media->media_id);
 				JSON_SET_SIMPLE_CSTR("protocol",media->protocol ? media->protocol->name : "");

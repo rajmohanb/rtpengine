@@ -26,6 +26,8 @@
 #include "statistics.h"
 #include "main.h"
 #include "media_socket.h"
+#include "rtplib.h"
+#include "ssrc.h"
 
 #include "rtpengine_config.h"
 
@@ -86,6 +88,8 @@ static void cli_incoming_list_redisconnecttimeout(str *instr, struct streambuf *
 static void cli_incoming_list_rediscmdtimeout(str *instr, struct streambuf *replybuffer);
 static void cli_incoming_list_controltos(str *instr, struct streambuf *replybuffer);
 static void cli_incoming_list_interfaces(str *instr, struct streambuf *replybuffer);
+static void cli_incoming_list_jsonstats(str *instr, struct streambuf *replybuffer);
+static void cli_incoming_list_transcoders(str *instr, struct streambuf *replybuffer);
 
 static const cli_handler_t cli_top_handlers[] = {
 	{ "list",		cli_incoming_list		},
@@ -137,6 +141,8 @@ static const cli_handler_t cli_list_handlers[] = {
 	{ "rediscmdtimeout",		cli_incoming_list_rediscmdtimeout	},
 	{ "controltos",			cli_incoming_list_controltos		},
 	{ "interfaces",			cli_incoming_list_interfaces		},
+	{ "jsonstats",			cli_incoming_list_jsonstats		},
+	{ "transcoders",		cli_incoming_list_transcoders		},
 	{ NULL, },
 };
 
@@ -394,104 +400,21 @@ static void cli_incoming_list_counters(str *instr, struct streambuf *replybuffer
 }
 
 static void cli_incoming_list_totals(str *instr, struct streambuf *replybuffer) {
-	struct timeval avg, calls_dur_iv;
-	u_int64_t num_sessions, min_sess_iv, max_sess_iv;
-	struct request_time offer_iv, answer_iv, delete_iv;
-	struct requests_ps offers_ps, answers_ps, deletes_ps;
+	AUTO_CLEANUP_INIT(GQueue *metrics, statistics_free_metrics, statistics_gather_metrics());
 
-	mutex_lock(&rtpe_totalstats.total_average_lock);
-	avg = rtpe_totalstats.total_average_call_dur;
-	num_sessions = rtpe_totalstats.total_managed_sess;
-	mutex_unlock(&rtpe_totalstats.total_average_lock);
-
-	streambuf_printf(replybuffer, "\nTotal statistics (does not include current running sessions):\n\n");
-	streambuf_printf(replybuffer, " Uptime of rtpengine                             :%llu seconds\n", (unsigned long long)time(NULL)-rtpe_totalstats.started);
-	streambuf_printf(replybuffer, " Total managed sessions                          :"UINT64F"\n", num_sessions);
-	streambuf_printf(replybuffer, " Total rejected sessions                         :"UINT64F"\n", atomic64_get(&rtpe_totalstats.total_rejected_sess));
-	streambuf_printf(replybuffer, " Total timed-out sessions via TIMEOUT            :"UINT64F"\n",atomic64_get(&rtpe_totalstats.total_timeout_sess));
-	streambuf_printf(replybuffer, " Total timed-out sessions via SILENT_TIMEOUT     :"UINT64F"\n",atomic64_get(&rtpe_totalstats.total_silent_timeout_sess));
-	streambuf_printf(replybuffer, " Total timed-out sessions via FINAL_TIMEOUT      :"UINT64F"\n",atomic64_get(&rtpe_totalstats.total_final_timeout_sess));
-	streambuf_printf(replybuffer, " Total timed-out sessions via OFFER_TIMEOUT      :"UINT64F"\n",atomic64_get(&rtpe_totalstats.total_offer_timeout_sess));
-	streambuf_printf(replybuffer, " Total regular terminated sessions               :"UINT64F"\n",atomic64_get(&rtpe_totalstats.total_regular_term_sess));
-	streambuf_printf(replybuffer, " Total forced terminated sessions                :"UINT64F"\n",atomic64_get(&rtpe_totalstats.total_forced_term_sess));
-	streambuf_printf(replybuffer, " Total relayed packets                           :"UINT64F"\n",atomic64_get(&rtpe_totalstats.total_relayed_packets));
-	streambuf_printf(replybuffer, " Total relayed packet errors                     :"UINT64F"\n",atomic64_get(&rtpe_totalstats.total_relayed_errors));
-	streambuf_printf(replybuffer, " Total number of streams with no relayed packets :"UINT64F"\n", atomic64_get(&rtpe_totalstats.total_nopacket_relayed_sess));
-	streambuf_printf(replybuffer, " Total number of 1-way streams                   :"UINT64F"\n",atomic64_get(&rtpe_totalstats.total_oneway_stream_sess));
-	streambuf_printf(replybuffer, " Average call duration                           :%ld.%06ld\n\n",avg.tv_sec,avg.tv_usec);
-
-	mutex_lock(&rtpe_totalstats_lastinterval_lock);
-	calls_dur_iv = rtpe_totalstats_lastinterval.total_calls_duration_interval;
-	min_sess_iv = rtpe_totalstats_lastinterval.managed_sess_min;
-	max_sess_iv = rtpe_totalstats_lastinterval.managed_sess_max;
-	offer_iv = rtpe_totalstats_lastinterval.offer;
-	answer_iv = rtpe_totalstats_lastinterval.answer;
-	delete_iv = rtpe_totalstats_lastinterval.delete;
-	offers_ps = rtpe_totalstats_lastinterval.offers_ps;
-	answers_ps = rtpe_totalstats_lastinterval.answers_ps;
-	deletes_ps = rtpe_totalstats_lastinterval.deletes_ps;
-	mutex_unlock(&rtpe_totalstats_lastinterval_lock);
-
-	streambuf_printf(replybuffer, "\nGraphite interval statistics (last reported values to graphite):\n");
-	streambuf_printf(replybuffer, " Total calls duration                            :%ld.%06ld\n\n",calls_dur_iv.tv_sec,calls_dur_iv.tv_usec);
-	streambuf_printf(replybuffer, " Min managed sessions                            :"UINT64F"\n", min_sess_iv);
-	streambuf_printf(replybuffer, " Max managed sessions                            :"UINT64F"\n", max_sess_iv);
-	streambuf_printf(replybuffer, " Min/Max/Avg offer processing delay              :%llu.%06llu/%llu.%06llu/%llu.%06llu sec\n",
-			(unsigned long long)offer_iv.time_min.tv_sec,(unsigned long long)offer_iv.time_min.tv_usec,
-			(unsigned long long)offer_iv.time_max.tv_sec,(unsigned long long)offer_iv.time_max.tv_usec,
-			(unsigned long long)offer_iv.time_avg.tv_sec,(unsigned long long)offer_iv.time_avg.tv_usec);
-	streambuf_printf(replybuffer, " Min/Max/Avg answer processing delay             :%llu.%06llu/%llu.%06llu/%llu.%06llu sec\n",
-			(unsigned long long)answer_iv.time_min.tv_sec,(unsigned long long)answer_iv.time_min.tv_usec,
-			(unsigned long long)answer_iv.time_max.tv_sec,(unsigned long long)answer_iv.time_max.tv_usec,
-			(unsigned long long)answer_iv.time_avg.tv_sec,(unsigned long long)answer_iv.time_avg.tv_usec);
-	streambuf_printf(replybuffer, " Min/Max/Avg delete processing delay             :%llu.%06llu/%llu.%06llu/%llu.%06llu sec\n",
-			(unsigned long long)delete_iv.time_min.tv_sec,(unsigned long long)delete_iv.time_min.tv_usec,
-			(unsigned long long)delete_iv.time_max.tv_sec,(unsigned long long)delete_iv.time_max.tv_usec,
-			(unsigned long long)delete_iv.time_avg.tv_sec,(unsigned long long)delete_iv.time_avg.tv_usec);
-
-	streambuf_printf(replybuffer, " Min/Max/Avg offer requests per second           :%llu/%llu/%llu per sec\n",
-			(unsigned long long)offers_ps.ps_min,
-			(unsigned long long)offers_ps.ps_max,
-			(unsigned long long)offers_ps.ps_avg);
-	streambuf_printf(replybuffer, " Min/Max/Avg answer requests per second          :%llu/%llu/%llu per sec\n",	(unsigned long long)answers_ps.ps_min,
-			(unsigned long long)answers_ps.ps_max,
-			(unsigned long long)answers_ps.ps_avg);
-	streambuf_printf(replybuffer, " Min/Max/Avg delete requests per second          :%llu/%llu/%llu per sec\n",
-			(unsigned long long)deletes_ps.ps_min,
-			(unsigned long long)deletes_ps.ps_max,
-			(unsigned long long)deletes_ps.ps_avg);
-
-	streambuf_printf(replybuffer, "\n\n");
-
-	streambuf_printf(replybuffer, "Control statistics:\n\n");
-	streambuf_printf(replybuffer, " %20s | %10s | %10s | %10s | %10s | %10s | %10s | %10s | %10s | %10s | %10s | %10s \n",
-			"Proxy", "Offer", "Answer", "Delete", "Ping", "List", "Query", "StartRec", "StopRec", "Errors", "BlkDTMF", "UnblkDTMF");
-
-	mutex_lock(&rtpe_cngs_lock);
-	GList *list = g_hash_table_get_values(rtpe_cngs_hash);
-
-	if (!list) {
-		streambuf_printf(replybuffer, "\n                  No proxies have yet tried to send data.");
+	for (GList *l = metrics->head; l; l = l->next) {
+		struct stats_metric *m = l->data;
+		if (!m->descr)
+			continue;
+		if (m->value_long) {
+			if (!strcmp(m->descr, ""))
+				streambuf_printf(replybuffer, "%s\n", m->value_long);
+			else
+				streambuf_printf(replybuffer, " %-48s:%s\n", m->descr, m->value_long);
+		}
+		else
+			streambuf_printf(replybuffer, "%s\n", m->descr);
 	}
-	for (GList *l = list; l; l = l->next) {
-		struct control_ng_stats* cur = l->data;
-		streambuf_printf(replybuffer, " %20s | %10u | %10u | %10u | %10u | %10u | %10u | %10u | %10u | %10u | %10u | %10u \n",
-				sockaddr_print_buf(&cur->proxy),
-				cur->offer,
-				cur->answer,
-				cur->delete,
-				cur->ping,
-				cur->list,
-				cur->query,
-				cur->start_recording,
-				cur->stop_recording,
-				cur->errors,
-				cur->block_dtmf,
-				cur->unblock_dtmf);
-	}
-	streambuf_printf(replybuffer, "\n\n");
-	mutex_unlock(&rtpe_cngs_lock);
-	g_list_free(list);
 }
 
 static void cli_incoming_list_numsessions(str *instr, struct streambuf *replybuffer) {
@@ -500,6 +423,7 @@ static void cli_incoming_list_numsessions(str *instr, struct streambuf *replybuf
        streambuf_printf(replybuffer, "Current sessions foreign: "UINT64F"\n", atomic64_get(&rtpe_stats.foreign_sessions));
        streambuf_printf(replybuffer, "Current sessions total: %i\n", g_hash_table_size(rtpe_callhash));
        rwlock_unlock_r(&rtpe_callhash_lock);
+       streambuf_printf(replybuffer, "Current transcoded media: "UINT64F"\n", atomic64_get(&rtpe_stats.transcoded_media));
 }
 
 static void cli_incoming_list_maxsessions(str *instr, struct streambuf *replybuffer) {
@@ -589,103 +513,105 @@ static void cli_incoming_list_offertimeout(str *instr, struct streambuf *replybu
 }
 
 static void cli_incoming_list_callid(str *instr, struct streambuf *replybuffer) {
-   struct call* c=0;
-   struct call_monologue *ml;
-   struct call_media *md;
-   struct packet_stream *ps;
-   GList *l;
-   GList *k, *o;
-   struct timeval tim_result_duration;
-   struct timeval now;
-   char * local_addr;
+	struct call *c = 0;
+	struct call_monologue *ml;
+	struct call_media *md;
+	struct packet_stream *ps;
+	GList *l;
+	GList *k, *o;
+	struct timeval tim_result_duration;
+	struct timeval now;
+	char *local_addr;
 
-   if (instr->len == 0) {
-       streambuf_printf(replybuffer, "%s\n", "More parameters required.");
-       return;
-   }
+	if (instr->len == 0) {
+		streambuf_printf(replybuffer, "%s\n", "More parameters required.");
+		return;
+	}
 
-   c = call_get(instr);
+	c = call_get(instr);
 
-   if (!c) {
-       streambuf_printf(replybuffer, "\nCall Id not found (%s).\n\n",instr->s);
-       return;
-   }
+	if (!c) {
+		streambuf_printf(replybuffer, "\nCall Id not found (%s).\n\n", instr->s);
+		return;
+	}
 
-   streambuf_printf(replybuffer,  "\ncallid: %60s | deletionmark:%4s | created:%12i  | proxy:%s | tos:%u | last_signal:%llu | redis_keyspace:%i | foreign:%s\n\n",
-		   c->callid.s , c->ml_deleted?"yes":"no", (int)c->created.tv_sec, c->created_from, (unsigned int)c->tos, (unsigned long long)c->last_signal, c->redis_hosted_db, IS_FOREIGN_CALL(c)?"yes":"no");
+	streambuf_printf(replybuffer,
+			 "\ncallid: %s\ndeletionmark: %s\ncreated: %i\nproxy: %s\ntos: %u\nlast_signal: %llu\n"
+			 "redis_keyspace: %i\nforeign: %s\n\n",
+			 c->callid.s, c->ml_deleted ? "yes" : "no", (int) c->created.tv_sec, c->created_from,
+			 (unsigned int) c->tos, (unsigned long long) c->last_signal, c->redis_hosted_db,
+			 IS_FOREIGN_CALL(c) ? "yes" : "no");
 
-   for (l = c->monologues.head; l; l = l->next) {
-	   ml = l->data;
-	   if (!ml->terminated.tv_sec) {
-		   gettimeofday(&now, NULL);
-	   } else {
-		   now = ml->terminated;
-	   }
-	   timeval_subtract(&tim_result_duration,&now,&ml->started);
-	   streambuf_printf(replybuffer, "--- Tag '"STR_FORMAT"' type: %s, callduration "
-            "%ld.%06ld , in dialogue with '"STR_FORMAT"'\n",
+	for (l = c->monologues.head; l; l = l->next) {
+		ml = l->data;
+		if (!ml->terminated.tv_sec)
+			gettimeofday(&now, NULL);
+		else
+			now = ml->terminated;
+
+		timeval_subtract(&tim_result_duration, &now, &ml->started);
+
+		streambuf_printf(replybuffer, "--- Tag '" STR_FORMAT "', type: %s, label '" STR_FORMAT "', "
+				"branch '" STR_FORMAT "', "
+				"callduration "
+				"%ld.%06ld, in dialogue with '" STR_FORMAT "'\n",
 			STR_FMT(&ml->tag), get_tag_type_text(ml->tagtype),
-            tim_result_duration.tv_sec,
-            tim_result_duration.tv_usec,
-            ml->active_dialogue ? ml->active_dialogue->tag.len : 6,
-                ml->active_dialogue ? ml->active_dialogue->tag.s : "(none)");
+			STR_FMT(ml->label.s ? &ml->label : &STR_EMPTY),
+			STR_FMT(&ml->viabranch),
+			tim_result_duration.tv_sec,
+			tim_result_duration.tv_usec,
+			ml->active_dialogue ? ml->active_dialogue->tag.len : 6,
+			ml->active_dialogue ? ml->active_dialogue->tag.s : "(none)");
 
-       for (k = ml->medias.head; k; k = k->next) {
-           md = k->data;
+		for (k = ml->medias.head; k; k = k->next) {
+			md = k->data;
 
-           for (o = md->streams.head; o; o = o->next) {
-               ps = o->data;
+			const struct rtp_payload_type *rtp_pt = __rtp_stats_codec(md);
 
-               if (PS_ISSET(ps, FALLBACK_RTCP))
-                   continue;
+			streambuf_printf(replybuffer, "------ Media #%u (" STR_FORMAT " over %s) using ",
+					md->index,
+					STR_FMT(&md->type),
+					md->protocol ? md->protocol->name : "(unknown)");
+			if (!rtp_pt)
+				streambuf_printf(replybuffer, "unknown codec\n");
+			else
+				streambuf_printf(replybuffer, STR_FORMAT "\n", STR_FMT(&rtp_pt->encoding_with_params));
 
-               local_addr = ps->selected_sfd ? sockaddr_print_buf(&ps->selected_sfd->socket.local.address) : "0.0.0.0";
-#if (RE_HAS_MEASUREDELAY)
-               if (!PS_ISSET(ps, RTP) && PS_ISSET(ps, RTCP)) {
-		   streambuf_printf(replybuffer, "------ Media #%u, %15s:%-5hu <> %15s:%-5hu%s, "
-            			   ""UINT64F" p, "UINT64F" b, "UINT64F" e, "UINT64F" last_packet\n",
-						   md->index,
-						   local_addr, (unsigned int) (ps->sfd ? ps->sfd->fd.localport : 0),
-						   sockaddr_print_buf(&ps->endpoint.ip46), ps->endpoint.port,
-						   (!PS_ISSET(ps, RTP) && PS_ISSET(ps, RTCP)) ? " (RTCP)" : "",
-								   atomic64_get(&ps->stats.packets),
-								   atomic64_get(&ps->stats.bytes),
-								   atomic64_get(&ps->stats.errors),
-								   atomic64_get(&ps->last_packet));
-               } else {
-		   streambuf_printf(replybuffer, "------ Media #%u, %15s:%-5hu <> %15s:%-5hu%s, "
-			   ""UINT64F" p, "UINT64F" b, "UINT64F" e, "UINT64F" last_packet, %.9f delay_min, %.9f delay_avg, %.9f delay_max\n",
-						   md->index,
-						   local_addr, (unsigned int) (ps->sfd ? ps->sfd->fd.localport : 0),
-						   sockaddr_print_buf(&ps->endpoint.ip46), ps->endpoint.port,
-						   (!PS_ISSET(ps, RTP) && PS_ISSET(ps, RTCP)) ? " (RTCP)" : "",
-								   atomic64_get(&ps->stats.packets),
-								   atomic64_get(&ps->stats.bytes),
-								   atomic64_get(&ps->stats.errors),
-								   atomic64_get(&ps->last_packet),
-								   (double) ps->stats.delay_min / 1000000,
-								   (double) ps->stats.delay_avg / 1000000,
-								   (double) ps->stats.delay_max / 1000000);
-               }
-#else
-               streambuf_printf(replybuffer, "------ Media #%u, %15s:%-5u <> %15s:%-5u%s, "
-                    ""UINT64F" p, "UINT64F" b, "UINT64F" e, "UINT64F" last_packet\n",
-                    md->index,
-                    local_addr, (unsigned int) (ps->selected_sfd ? ps->selected_sfd->socket.local.port : 0),
-                    sockaddr_print_buf(&ps->endpoint.address), ps->endpoint.port,
-                    (!PS_ISSET(ps, RTP) && PS_ISSET(ps, RTCP)) ? " (RTCP)" : "",
-                         atomic64_get(&ps->stats.packets),
-                         atomic64_get(&ps->stats.bytes),
-                         atomic64_get(&ps->stats.errors),
-                         atomic64_get(&ps->last_packet));
+			for (o = md->streams.head; o; o = o->next) {
+				ps = o->data;
+
+				if (PS_ISSET(ps, FALLBACK_RTCP))
+					continue;
+
+				local_addr = ps->selected_sfd ? sockaddr_print_buf(&ps->selected_sfd->socket.local.address)
+					: "0.0.0.0";
+
+				streambuf_printf(replybuffer, "-------- Port %15s:%-5u <> %15s:%-5u%s, SSRC %" PRIx32 ", "
+						 "" UINT64F " p, " UINT64F " b, " UINT64F " e, " UINT64F " ts",
+						 local_addr,
+						 (unsigned int) (ps->selected_sfd ? ps->selected_sfd->socket.local.port : 0),
+						 sockaddr_print_buf(&ps->endpoint.address),
+						 ps->endpoint.port,
+						 (!PS_ISSET(ps, RTP) && PS_ISSET(ps, RTCP)) ? " (RTCP)" : "",
+						 ps->ssrc_in ? ps->ssrc_in->parent->h.ssrc : 0,
+						 atomic64_get(&ps->stats.packets),
+						 atomic64_get(&ps->stats.bytes), atomic64_get(&ps->stats.errors),
+						 atomic64_get(&ps->last_packet));
+#if RE_HAS_MEASUREDELAY
+				if (PS_ISSET(ps, RTP) || !PS_ISSET(ps, RTCP))
+					streambuf_printf(replybuffer, ", %.9f delay_min, %.9f delay_avg, %.9f delay_max",
+							 (double) ps->stats.delay_min / 1000000,
+							 (double) ps->stats.delay_avg / 1000000,
+							 (double) ps->stats.delay_max / 1000000);
 #endif
-           }
-       }
-   }
-   streambuf_printf(replybuffer, "\n");
+				streambuf_printf(replybuffer, "\n");
+			}
+		}
+	}
+	streambuf_printf(replybuffer, "\n");
 
-   rwlock_unlock_w(&c->master_lock); // because of call_get(..)
-   obj_put(c);
+	rwlock_unlock_w(&c->master_lock);	// because of call_get(..)
+	obj_put(c);
 }
 
 static void cli_incoming_list_sessions(str *instr, struct streambuf *replybuffer) {
@@ -1386,6 +1312,52 @@ static void cli_incoming_list_interfaces(str *instr, struct streambuf *replybuff
 		streambuf_printf(replybuffer, " Last port used: %5u\n",
 				l);
 	}
+}
+
+static void cli_incoming_list_jsonstats(str *instr, struct streambuf *replybuffer) {
+	AUTO_CLEANUP_INIT(GQueue *metrics, statistics_free_metrics, statistics_gather_metrics());
+
+	for (GList *l = metrics->head; l; l = l->next) {
+		struct stats_metric *m = l->data;
+		if (!m->label)
+			continue;
+
+		if (m->is_follow_up)
+			streambuf_printf(replybuffer, ",");
+
+		if (m->value_short)
+			streambuf_printf(replybuffer, "\"%s\":%s", m->label, m->value_short);
+		else if (m->is_bracket)
+			streambuf_printf(replybuffer, "%s", m->label);
+		else
+			streambuf_printf(replybuffer, "\"%s\":", m->label);
+	}
+}
+
+static void cli_incoming_list_transcoders(str *instr, struct streambuf *replybuffer) {
+	mutex_lock(&rtpe_codec_stats_lock);
+
+	GList *chains = g_hash_table_get_keys(rtpe_codec_stats);
+	if (!chains)
+		streambuf_printf(replybuffer, "No stats entries\n");
+	else {
+		int last_tv_sec = rtpe_now.tv_sec - 1;
+		unsigned int idx = last_tv_sec & 1;
+		for (GList *l = chains; l; l = l->next) {
+			char *chain = l->data;
+			struct codec_stats *stats_entry = g_hash_table_lookup(rtpe_codec_stats, chain);
+			streambuf_printf(replybuffer, "%s: %i transcoders\n", chain, g_atomic_int_get(&stats_entry->num_transcoders));
+			if (g_atomic_int_get(&stats_entry->last_tv_sec[idx]) != last_tv_sec)
+				continue;
+			streambuf_printf(replybuffer, "     " UINT64F " packets/s\n", atomic64_get(&stats_entry->packets_input[idx]));
+			streambuf_printf(replybuffer, "     " UINT64F " bytes/s\n", atomic64_get(&stats_entry->bytes_input[idx]));
+			streambuf_printf(replybuffer, "     " UINT64F " samples/s\n", atomic64_get(&stats_entry->pcm_samples[idx]));
+		}
+	}
+
+	mutex_unlock(&rtpe_codec_stats_lock);
+
+	g_list_free(chains);
 }
 
 static void cli_incoming_list_controltos(str *instr, struct streambuf *replybuffer) {

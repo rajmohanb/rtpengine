@@ -19,6 +19,7 @@ struct media_packet;
 struct transport_protocol;
 struct ssrc_ctx;
 struct rtpengine_srtp;
+struct jb_packet;
 
 typedef int rtcp_filter_func(struct media_packet *, GQueue *);
 typedef int (*rewrite_func)(str *, struct packet_stream *, struct stream_fd *, const endpoint_t *,
@@ -33,14 +34,19 @@ enum transport_protocol_index {
 	PROTO_UDP_TLS_RTP_SAVP,
 	PROTO_UDP_TLS_RTP_SAVPF,
 	PROTO_UDPTL,
+	PROTO_RTP_SAVP_OSRTP,
+	PROTO_RTP_SAVPF_OSRTP,
 
 	__PROTO_LAST,
 };
 struct transport_protocol {
 	enum transport_protocol_index	index;
 	const char			*name;
+	enum transport_protocol_index	avpf_proto;
+	enum transport_protocol_index	osrtp_proto;
 	int				rtp:1; /* also set to 1 for SRTP */
 	int				srtp:1;
+	int				osrtp:1;
 	int				avpf:1;
 	int				tcp:1;
 };
@@ -77,6 +83,7 @@ struct port_pool {
 
 	mutex_t				free_list_lock;
 	GQueue				free_list;
+	BIT_ARRAY_DECLARE(free_list_used, 0x10000);
 };
 struct intf_address {
 	socktype_t			*type;
@@ -169,9 +176,11 @@ void __stream_unconfirm(struct packet_stream *);
 
 int media_socket_dequeue(struct media_packet *mp, struct packet_stream *sink);
 const struct streamhandler *determine_handler(const struct transport_protocol *in_proto,
-		const struct transport_protocol *out_proto, int must_recrypt);
+		struct call_media *out_media, int must_recrypt);
 int media_packet_encrypt(rewrite_func encrypt_func, struct packet_stream *out, struct media_packet *mp);
 const struct transport_protocol *transport_protocol(const str *s);
+//void play_buffered(struct packet_stream *sink, struct codec_packet *cp, int buffered);
+void play_buffered(struct jb_packet *cp);
 
 /* XXX shouldn't be necessary */
 /*
@@ -184,6 +193,24 @@ INLINE struct local_intf *get_interface_from_address(const struct logical_intf *
 	return g_hash_table_lookup(lif->addr_hash, &a);
 }
 */
+
+INLINE int proto_is_rtp(const struct transport_protocol *protocol) {
+	// known to be RTP? therefore unknown is not RTP
+	if (!protocol)
+		return 0;
+	return protocol->rtp ? 1 : 0;
+}
+INLINE int proto_is_not_rtp(const struct transport_protocol *protocol) {
+	// known not to be RTP? therefore unknown might be RTP
+	if (!protocol)
+		return 0;
+	return protocol->rtp ? 0 : 1;
+}
+INLINE int proto_is(const struct transport_protocol *protocol, enum transport_protocol_index idx) {
+	if (!protocol)
+		return 0;
+	return (protocol->index == idx) ? 1 : 0;
+}
 
 
 #endif

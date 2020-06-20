@@ -262,7 +262,7 @@ static int __ip_connect(socket_t *s, const endpoint_t *ep) {
 		__C_DBG("connect fail, fd=%d, port=%d", s->fd, s->local.port);
 		return -1;
 	} else {
-		__C_DBG("connect succes, fd=%d, port=%d", s->fd, s->local.port);
+		__C_DBG("connect success, fd=%d, port=%d", s->fd, s->local.port);
 	}
 	return 0;
 }
@@ -295,7 +295,7 @@ static ssize_t __ip_recvfrom_ts(socket_t *s, void *buf, size_t len, endpoint_t *
 	struct sockaddr_storage sin;
 	struct msghdr msg;
 	struct iovec iov;
-	char ctrl[32];
+	char ctrl[64];
 	struct cmsghdr *cm;
 
 	ZERO(msg);

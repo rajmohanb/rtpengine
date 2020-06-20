@@ -61,9 +61,11 @@ static void __start(const char *file, int line) {
 	ml_A = (struct call_monologue) {0,};
 	str_init(&ml_A.tag, "tag_A");
 	media_A->monologue = &ml_A;
+	media_A->protocol = &transport_protocols[PROTO_RTP_AVP];
 	ml_B = (struct call_monologue) {0,};
 	str_init(&ml_B.tag, "tag_B");
 	media_B->monologue = &ml_B;
+	media_B->protocol = &transport_protocols[PROTO_RTP_AVP];
 	g_queue_init(&rtp_types); // parsed from received SDP
 	flags.codec_strip = g_hash_table_new_full(str_hash, str_equal, str_slice_free, NULL);
 	flags.codec_mask = g_hash_table_new_full(str_hash, str_equal, str_slice_free, NULL);
@@ -106,7 +108,7 @@ static void __sdp_pt_fmt(int num, str codec, int clockrate, str full_codec, str 
 static void offer(void) {
 	printf("offer\n");
 	codec_rtp_payload_types(media_B, media_A, &rtp_types, &flags);
-	codec_handlers_update(media_B, media_A, &flags);
+	codec_handlers_update(media_B, media_A, &flags, NULL);
 	g_queue_clear(&rtp_types);
 	memset(&flags, 0, sizeof(flags));
 }
@@ -114,7 +116,7 @@ static void offer(void) {
 static void answer(void) {
 	printf("answer\n");
 	codec_rtp_payload_types(media_A, media_B, &rtp_types, &flags);
-	codec_handlers_update(media_A, media_B, &flags);
+	codec_handlers_update(media_A, media_B, &flags, NULL);
 }
 
 #define expect(side, dir, codecs) \
@@ -141,7 +143,7 @@ static void __expect(const char *file, int line, GQueue *dumper, const char *cod
 static void __check_encoder(const char *file, int line, struct call_media *m, int in_pt, int out_pt,
 		int out_bitrate)
 {
-	struct codec_handler *ch = g_hash_table_lookup(m->codec_handlers, &in_pt);
+	struct codec_handler *ch = g_hash_table_lookup(m->codec_handlers, GINT_TO_POINTER(in_pt));
 	printf("running test %s:%i\n", file, line);
 	assert(ch->source_pt.payload_type == in_pt);
 	if (ch->dest_pt.payload_type != out_pt || ch->dest_pt.bitrate != out_bitrate) {
@@ -177,12 +179,12 @@ static void __packet_seq_ts(const char *file, int line, struct call_media *media
 	struct media_packet mp = {
 		.call = &call,
 		.media = media,
-		.ssrc_in = get_ssrc_ctx(ssrc, call.ssrc_hash, SSRC_DIR_INPUT),
+		.ssrc_in = get_ssrc_ctx(ssrc, call.ssrc_hash, SSRC_DIR_INPUT, NULL),
 	};
 	// from __stream_ssrc()
 	if (!MEDIA_ISSET(media, TRANSCODE))
 		mp.ssrc_in->ssrc_map_out = ntohl(ssrc);
-	mp.ssrc_out = get_ssrc_ctx(mp.ssrc_in->ssrc_map_out, call.ssrc_hash, SSRC_DIR_OUTPUT);
+	mp.ssrc_out = get_ssrc_ctx(mp.ssrc_in->ssrc_map_out, call.ssrc_hash, SSRC_DIR_OUTPUT, NULL);
 	payload_tracker_add(&mp.ssrc_in->tracker, pt_in & 0x7f);
 
 	int packet_len = sizeof(struct rtp_header) + pl.len;
@@ -315,6 +317,7 @@ static void dtmf(const char *s) {
 int main(void) {
 	codeclib_init(0);
 	srandom(time(NULL));
+	statistics_init();
 
 	// plain
 	start();
@@ -853,7 +856,7 @@ int main(void) {
 	dtmf("");
 	// end
 	packet_seq(A, 101, "\x08\x8a\x03\x20", 1000160, 205, 101, "\x08\x8a\x03\x20");
-	dtmf("{\"callid\":\"test-call\",\"source_tag\":\"tag_A\",\"tags\":[],\"type\":\"DTMF\",\"timestamp\":0,\"source_ip\":\"(null)\",\"event\":8,\"duration\":100,\"volume\":10}");
+	dtmf("{\"callid\":\"test-call\",\"source_tag\":\"tag_A\",\"tags\":[],\"type\":\"DTMF\",\"timestamp\":0,\"source_ip\":\"\",\"event\":8,\"duration\":100,\"volume\":10}");
 	packet_seq_exp(A, 101, "\x08\x8a\x03\x20", 1000160, 205, 101, "\x08\x8a\x03\x20", 0);
 	packet_seq_exp(A, 101, "\x08\x8a\x03\x20", 1000160, 205, 101, "\x08\x8a\x03\x20", 0);
 	dtmf("");
@@ -869,7 +872,7 @@ int main(void) {
 	dtmf("");
 	// end
 	packet_seq(A, 101, "\x05\x8a\x02\x80", 1001280, 211, 101, "\x05\x8a\x02\x80");
-	dtmf("{\"callid\":\"test-call\",\"source_tag\":\"tag_A\",\"tags\":[],\"type\":\"DTMF\",\"timestamp\":0,\"source_ip\":\"(null)\",\"event\":5,\"duration\":80,\"volume\":10}");
+	dtmf("{\"callid\":\"test-call\",\"source_tag\":\"tag_A\",\"tags\":[],\"type\":\"DTMF\",\"timestamp\":0,\"source_ip\":\"\",\"event\":5,\"duration\":80,\"volume\":10}");
 	packet_seq_exp(A, 101, "\x05\x8a\x02\x80", 1001280, 211, 101, "\x05\x8a\x02\x80", 0);
 	packet_seq_exp(A, 101, "\x05\x8a\x02\x80", 1001280, 211, 101, "\x05\x8a\x02\x80", 0);
 	dtmf("");
@@ -906,7 +909,7 @@ int main(void) {
 	dtmf("");
 	// end
 	packet_seq(A, 101, "\x08\x8a\x03\x20", 1000160, 205, 101, "\x08\x8a\x03\x20");
-	dtmf("{\"callid\":\"test-call\",\"source_tag\":\"tag_A\",\"tags\":[],\"type\":\"DTMF\",\"timestamp\":0,\"source_ip\":\"(null)\",\"event\":8,\"duration\":100,\"volume\":10}");
+	dtmf("{\"callid\":\"test-call\",\"source_tag\":\"tag_A\",\"tags\":[],\"type\":\"DTMF\",\"timestamp\":0,\"source_ip\":\"\",\"event\":8,\"duration\":100,\"volume\":10}");
 	packet_seq_exp(A, 101, "\x08\x8a\x03\x20", 1000160, 205, 101, "\x08\x8a\x03\x20", 0);
 	packet_seq_exp(A, 101, "\x08\x8a\x03\x20", 1000160, 205, 101, "\x08\x8a\x03\x20", 0);
 	dtmf("");
@@ -922,7 +925,7 @@ int main(void) {
 	dtmf("");
 	// end
 	packet_seq(A, 101, "\x05\x8a\x02\x80", 1001280, 211, 101, "\x05\x8a\x02\x80");
-	dtmf("{\"callid\":\"test-call\",\"source_tag\":\"tag_A\",\"tags\":[],\"type\":\"DTMF\",\"timestamp\":0,\"source_ip\":\"(null)\",\"event\":5,\"duration\":80,\"volume\":10}");
+	dtmf("{\"callid\":\"test-call\",\"source_tag\":\"tag_A\",\"tags\":[],\"type\":\"DTMF\",\"timestamp\":0,\"source_ip\":\"\",\"event\":5,\"duration\":80,\"volume\":10}");
 	packet_seq_exp(A, 101, "\x05\x8a\x02\x80", 1001280, 211, 101, "\x05\x8a\x02\x80", 0);
 	packet_seq_exp(A, 101, "\x05\x8a\x02\x80", 1001280, 211, 101, "\x05\x8a\x02\x80", 0);
 	dtmf("");
@@ -958,7 +961,7 @@ int main(void) {
 	dtmf("");
 	// end
 	packet_seq(A, 101, "\x08\x8a\x03\x20", 1000160, 205, 101, "\x08\x8a\x03\x20");
-	dtmf("{\"callid\":\"test-call\",\"source_tag\":\"tag_A\",\"tags\":[],\"type\":\"DTMF\",\"timestamp\":0,\"source_ip\":\"(null)\",\"event\":8,\"duration\":100,\"volume\":10}");
+	dtmf("{\"callid\":\"test-call\",\"source_tag\":\"tag_A\",\"tags\":[],\"type\":\"DTMF\",\"timestamp\":0,\"source_ip\":\"\",\"event\":8,\"duration\":100,\"volume\":10}");
 	packet_seq_exp(A, 101, "\x08\x8a\x03\x20", 1000160, 205, 101, "\x08\x8a\x03\x20", 0);
 	packet_seq_exp(A, 101, "\x08\x8a\x03\x20", 1000160, 205, 101, "\x08\x8a\x03\x20", 0);
 	dtmf("");
@@ -974,7 +977,7 @@ int main(void) {
 	dtmf("");
 	// end
 	packet_seq(A, 101, "\x05\x8a\x02\x80", 1001280, 211, 101, "\x05\x8a\x02\x80");
-	dtmf("{\"callid\":\"test-call\",\"source_tag\":\"tag_A\",\"tags\":[],\"type\":\"DTMF\",\"timestamp\":0,\"source_ip\":\"(null)\",\"event\":5,\"duration\":80,\"volume\":10}");
+	dtmf("{\"callid\":\"test-call\",\"source_tag\":\"tag_A\",\"tags\":[],\"type\":\"DTMF\",\"timestamp\":0,\"source_ip\":\"\",\"event\":5,\"duration\":80,\"volume\":10}");
 	packet_seq_exp(A, 101, "\x05\x8a\x02\x80", 1001280, 211, 101, "\x05\x8a\x02\x80", 0);
 	packet_seq_exp(A, 101, "\x05\x8a\x02\x80", 1001280, 211, 101, "\x05\x8a\x02\x80", 0);
 	dtmf("");
@@ -1010,7 +1013,7 @@ int main(void) {
 	dtmf("");
 	// end
 	packet_seq(A, 101, "\x08\x8a\x03\x20", 1000160, 205, 101, "\x08\x8a\x03\x20");
-	dtmf("{\"callid\":\"test-call\",\"source_tag\":\"tag_A\",\"tags\":[],\"type\":\"DTMF\",\"timestamp\":0,\"source_ip\":\"(null)\",\"event\":8,\"duration\":100,\"volume\":10}");
+	dtmf("{\"callid\":\"test-call\",\"source_tag\":\"tag_A\",\"tags\":[],\"type\":\"DTMF\",\"timestamp\":0,\"source_ip\":\"\",\"event\":8,\"duration\":100,\"volume\":10}");
 	packet_seq_exp(A, 101, "\x08\x8a\x03\x20", 1000160, 205, 101, "\x08\x8a\x03\x20", 0);
 	packet_seq_exp(A, 101, "\x08\x8a\x03\x20", 1000160, 205, 101, "\x08\x8a\x03\x20", 0);
 	dtmf("");
@@ -1028,7 +1031,7 @@ int main(void) {
 	dtmf("");
 	// end
 	packet_seq(A, 101, "\x05\x8a\x02\x80", 1001280, 211, -1, "");
-	dtmf("{\"callid\":\"test-call\",\"source_tag\":\"tag_A\",\"tags\":[],\"type\":\"DTMF\",\"timestamp\":0,\"source_ip\":\"(null)\",\"event\":5,\"duration\":80,\"volume\":10}");
+	dtmf("{\"callid\":\"test-call\",\"source_tag\":\"tag_A\",\"tags\":[],\"type\":\"DTMF\",\"timestamp\":0,\"source_ip\":\"\",\"event\":5,\"duration\":80,\"volume\":10}");
 	packet_seq_exp(A, 101, "\x05\x8a\x02\x80", 1001280, 211, -1, "", 0);
 	packet_seq_exp(A, 101, "\x05\x8a\x02\x80", 1001280, 211, -1, "", 0);
 	dtmf("");
@@ -1079,7 +1082,7 @@ int main(void) {
 	dtmf("");
 	// end
 	packet_seq(A, 101, "\x08\x8a\x03\x20", 1000160, 205, 101, "\x08\x8a\x03\x20");
-	dtmf("{\"callid\":\"test-call\",\"source_tag\":\"tag_A\",\"tags\":[],\"type\":\"DTMF\",\"timestamp\":0,\"source_ip\":\"(null)\",\"event\":8,\"duration\":100,\"volume\":10}");
+	dtmf("{\"callid\":\"test-call\",\"source_tag\":\"tag_A\",\"tags\":[],\"type\":\"DTMF\",\"timestamp\":0,\"source_ip\":\"\",\"event\":8,\"duration\":100,\"volume\":10}");
 	packet_seq_exp(A, 101, "\x08\x8a\x03\x20", 1000160, 205, 101, "\x08\x8a\x03\x20", 0);
 	packet_seq_exp(A, 101, "\x08\x8a\x03\x20", 1000160, 205, 101, "\x08\x8a\x03\x20", 0);
 	dtmf("");
@@ -1097,7 +1100,7 @@ int main(void) {
 	dtmf("");
 	// end
 	packet_seq(A, 101, "\x05\x8a\x02\x80", 1001280, 211, -1, "");
-	dtmf("{\"callid\":\"test-call\",\"source_tag\":\"tag_A\",\"tags\":[],\"type\":\"DTMF\",\"timestamp\":0,\"source_ip\":\"(null)\",\"event\":5,\"duration\":80,\"volume\":10}");
+	dtmf("{\"callid\":\"test-call\",\"source_tag\":\"tag_A\",\"tags\":[],\"type\":\"DTMF\",\"timestamp\":0,\"source_ip\":\"\",\"event\":5,\"duration\":80,\"volume\":10}");
 	packet_seq_exp(A, 101, "\x05\x8a\x02\x80", 1001280, 211, -1, "", 0);
 	packet_seq_exp(A, 101, "\x05\x8a\x02\x80", 1001280, 211, -1, "", 0);
 	dtmf("");
@@ -1147,7 +1150,7 @@ int main(void) {
 	dtmf("");
 	// end
 	packet_seq(A, 101, "\x08\x8a\x03\x20", 1000160, 205, 101, "\x08\x8a\x03\x20");
-	dtmf("{\"callid\":\"test-call\",\"source_tag\":\"tag_A\",\"tags\":[],\"type\":\"DTMF\",\"timestamp\":0,\"source_ip\":\"(null)\",\"event\":8,\"duration\":100,\"volume\":10}");
+	dtmf("{\"callid\":\"test-call\",\"source_tag\":\"tag_A\",\"tags\":[],\"type\":\"DTMF\",\"timestamp\":0,\"source_ip\":\"\",\"event\":8,\"duration\":100,\"volume\":10}");
 	packet_seq_exp(A, 101, "\x08\x8a\x03\x20", 1000160, 205, 101, "\x08\x8a\x03\x20", 0);
 	packet_seq_exp(A, 101, "\x08\x8a\x03\x20", 1000160, 205, 101, "\x08\x8a\x03\x20", 0);
 	dtmf("");
@@ -1165,7 +1168,7 @@ int main(void) {
 	dtmf("");
 	// end
 	packet_seq(A, 101, "\x05\x8a\x02\x80", 1001280, 211, -1, "");
-	dtmf("{\"callid\":\"test-call\",\"source_tag\":\"tag_A\",\"tags\":[],\"type\":\"DTMF\",\"timestamp\":0,\"source_ip\":\"(null)\",\"event\":5,\"duration\":80,\"volume\":10}");
+	dtmf("{\"callid\":\"test-call\",\"source_tag\":\"tag_A\",\"tags\":[],\"type\":\"DTMF\",\"timestamp\":0,\"source_ip\":\"\",\"event\":5,\"duration\":80,\"volume\":10}");
 	packet_seq_exp(A, 101, "\x05\x8a\x02\x80", 1001280, 211, -1, "", 0);
 	packet_seq_exp(A, 101, "\x05\x8a\x02\x80", 1001280, 211, -1, "", 0);
 	dtmf("");

@@ -37,6 +37,7 @@ the following additional features are available:
   + AES-CM and AES-F8 ciphers, both in userspace and in kernel
   + HMAC-SHA1 packet authentication
   + Bridging between RTP and SRTP user agents
+  + Opportunistic SRTP (RFC 8643)
 - Support for RTCP profile with feedback extensions (RTP/AVPF, RFC 4585 and 5124)
 - Arbitrary bridging between any of the supported RTP profiles (RTP/AVP, RTP/AVPF,
   RTP/SAVP, RTP/SAVPF)
@@ -44,7 +45,10 @@ the following additional features are available:
 - Breaking of BUNDLE'd media streams (draft-ietf-mmusic-sdp-bundle-negotiation)
 - Recording of media streams, decrypted if possible
 - Transcoding and repacketization
+- Transcoding between RFC 2833/4733 DTMF event packets and in-band DTMF tones (and vice versa)
+- Injection of DTMF events or PCM DTMF tones into running audio streams
 - Playback of pre-recorded streams/announcements
+- Transcoding between T.38 and PCM (G.711 or other audio codecs)
 
 *Rtpengine* does not (yet) support:
 
@@ -132,6 +136,7 @@ build all parts and run the test suite.
 	- *libevent* version 2.x
 	- *libpcap*
 	- *libsystemd*
+	- *spandsp*
 	- *MySQL* or *MariaDB* client library (optional for media playback and call recording daemon)
 	- *libiptc* library for iptables management (optional)
 	- *ffmpeg* codec libraries for transcoding (optional) such as *libavcodec*, *libavfilter*, *libswresample*
@@ -241,7 +246,7 @@ The sequence of events for a newly established media stream is then:
     and will forward them on its own. It will stop those packets from traversing the network stacks any
     further, so the daemon will not see them any more on its receive queues.
 11. In-kernel forwarding is allowed to cease to work at any given time, either accidentally (e.g. by
-    removal of the *iptables* rule) or deliberatly (the daemon will do so in case of a re-invite), in which
+    removal of the *iptables* rule) or deliberately (the daemon will do so in case of a re-invite), in which
     case forwarding falls back to userspace-only operation.
 
 ### The Kernel Module ###
@@ -408,8 +413,6 @@ the necessary conversions.
 If repacketization (using the `ptime` option) is requested, the transcoding feature will also be
 engaged for the call, even if no additional codecs were requested.
 
-Non-audio pseudo-codecs (such as T.38 or RFC 4733 `telephone-event`) are not currently supported.
-
 G.729 support
 -------------
 
@@ -431,6 +434,55 @@ can be removed from `debian/control` or by switching to a different Debian build
 Set the environment variable
 `export DEB_BUILD_PROFILES="pkg.ngcp-rtpengine.nobcg729"` (or use the `-P` flag to the *dpkg* tools)
 and then build the *rtpengine* packages.
+
+DTMF transcoding
+----------------
+
+*Rtpengine* supports transcoding between RFC 2833/4733 DTMF event packets (`telephone-event` payloads)
+and in-band DTMF audio tones. When enabled, *rtpengine* translates DTMF event packets to in-band DTMF
+audio by generating DTMF tones and injecting them into the audio stream, and translates in-band DTMF
+tones by running the audio stream through a DSP, and generating DTMF event packets when a DTMF tone
+is detected.
+
+Support for DTMF transcoding can be enabled in one of two ways:
+
+* In the forward direction, DTMF transcoding is enabled by adding the codec `telephone-event` to the
+  list of codecs offered for transcoding. Specifically, if the incoming SDP body doesn't yet list
+  `telephone-event` as a supported codec, adding the option *codec → transcode → telephone-event* would
+  enable DTMF transcoding. The receiving RTP client can then accept this codec and start sending DTMF
+  event packets, which *rtpengine* would translate into in-band DTMF audio. If the receiving RTP client
+  also offers `telephone-event` in their behalf, *rtpengine* would then detect in-band DTMF audio coming
+  from the originating RTP client and translate it to DTMF event packets.
+
+* In the reverse direction, DTMF transcoding is enabled by adding the option `always transcode` to the
+  `flags` if the incoming SDP body offers `telephone-event` as a supported codec. If the receiving RTP
+  client then rejects the offered `telephone-event` codec, DTMF transcoding is then enabled and is
+  performed in the same way as described above.
+
+Enabling DTMF transcoding (in one of the two ways described above) implicitly enables the flag
+`always transcode` for the call and forces all of the audio to pass through the transcoding engine.
+Therefore, for performance reasons, this should only be done when really necessary.
+
+T.38
+----
+*Rtpengine* can translate between fax endpoints that speak T.38 over UDPTL and fax endpoints that speak
+T.30 over regular audio channels. Any audio codec can theoretically be used for T.30 transmissions, but
+codecs that are too compressed will make the fax transmission fail. The most commonly used audio codecs
+for fax are the G.711 codecs (`PCMU` and `PCMA`), which are the default codecs *rtpengine* will use in
+this case if no other codecs are specified.
+
+For further information, see the section on the `T.38` dictionary key below.
+
+Call recording
+==============
+
+Call recording can be accomplished in one of two ways: 
+
+* The *rtpengine* daemon can write `libpcap`-formatted captures directly (`--recording-method=pcap`);
+
+* The *rtpengine* daemon can write audio frames into a sink in `/proc/rtpengine` (`--recording-method=proc`). These frames must then be consumed within a short period by another process; while this can be any process, the packaged `rtpengine-recording` daemon is a useful ready implementation of a call recording solution. The recording daemon uses `ffmpeg` libraries to implement a variety of on-the-fly format conversion and mixing options, as well as metadata logging. See `rtpengine-recording -h` for details.
+
+**Important note**: The *rtpengine* daemon emits data into a "spool directory" (`--recording-dir` option), by default `/var/spool/rtpengine`. The recording daemon is then configured to consume this using the `--spool-dir` option, and to store the final emitted recordings (in whatever desired target format, etc.) in `--output-dir`. Ensure that the `--spool-dir` and the `--output-dir` are **different** directories, or you will run into problems (as discussed in [#81](https://github.com/sipwise/rtpengine/issues/808)).
 
 The *ng* Control Protocol
 =========================
@@ -469,6 +521,8 @@ a string and determines the type of message. Currently the following commands ar
 * stop forwarding
 * play media
 * stop media
+* play DTMF
+* statistics
 
 The response dictionary must contain at least one key called `result`. The value can be either `ok` or `error`.
 For the `ping` command, the additional value `pong` is allowed. If the result is `error`, then another key
@@ -647,6 +701,31 @@ Optionally included keys are:
 
 		This flag should be given as part of the `answer` message.
 
+	- `symmetric codecs`
+
+		This flag instructs *rtpengine* to honour the list of codecs accepted by answer, including
+		their order, and match them up with the list of codecs that *rtpengine* itself produces
+		when transcoding. It must be using in an `answer` message and is ignored in an `offer`.
+
+		By default, any supported codec that was originally offered will be accepted by
+		*rtpengine* when transcoding, and the first codec listed will be used as output codec,
+		even if neither this codec nor its transcoded counterpart was accepted by the answer.
+		With this flag given, *rtpengine* will prefer the codecs listed in the answer over
+		the codecs listed in the offer and re-order the answer accordingly. This can lead to
+		a high-priority codec given in the offer to be listed as low-priority codec in the
+		answer, and vice versa. On the other hand, it can lead to the transcoding engine to be
+		disabled when it isn't needed.
+
+		For example: The original offer lists codecs `PCMA` and `opus`. *Rtpengine* is instructed
+		to add `G722` as a transcoded codec in the offer, and so the offer produced by
+		*rtpengine* lists `PCMA`, `opus`, and `G722`. If *rtpengine* were to receive any
+		G.722 media, it would transcode it to PCMA as this is the codec preferred by the
+		offer. The answer now accepts `opus` and rejects the other two codecs. Without this
+		flag, the answer produced by *rtpengine* would contain both `PCMA` and `opus`, because
+		receiving G.722 would still be a possibility and so would have to be transcoded to
+		PCMA. With this flag however, *rtpengine* honours the single accepted codec from the
+		answer and so is able to eliminate PCMA from its own answer as it's not needed.
+
 	- `all`
 
 		Only relevant to the `unblock media` message. Instructs *rtpengine* to remove not only a
@@ -655,10 +734,8 @@ Optionally included keys are:
 
 	- `pad crypto`
 
-		RFC 4568 (section 6.1) is somewhat ambiguous regarding the base64 encoding format of
-		`a=crypto` parameters added to an SDP body. The default interpretation is that trailing
-		`=` characters used for padding should be omitted. With this flag set, these padding
-		characters will be left in place.
+		Legacy alias to SDES=pad.
+
 
 	- `generate mid`
 
@@ -671,6 +748,13 @@ Optionally included keys are:
 		unchanged. Normally *rtpengine* would consume these attributes and insert its
 		own version of them based on other media parameters (e.g. a media section with
 		a zero IP address would come out as `sendonly` or `inactive`).
+
+	- `inject DTMF`
+
+		Signals to *rtpengine* that the audio streams involved in this `offer` or `answer`
+		(the flag should be present in both of them) are to be made available for DTMF
+		injection via the `play DTMF` control message. See `play DTMF` below for additional
+		information.
 
 * `replace`
 
@@ -720,6 +804,18 @@ Optionally included keys are:
 	element is the SIP message's source address itself. The address family can be one of `IP4` or `IP6`.
 	Used if SDP addresses are neither trusted (through `SIP source address` or `--sip-source`) nor the
 	`media address` key is present.
+
+* `drop-traffic`
+
+	Contains a string, valid values are `start` or `stop`.
+
+	`start` signals to *rtpengine* that all RTP involved in this call is dropped.
+	Can be present either in `offer` or `answer`, the behavior is for the entire call.
+
+	`stop` signals to *rtpengine* that all RTP involved in this call is NOT dropped anymore.
+	Can be present either in `offer` or `answer`, the behavior is for the entire call.
+
+	`stop` has priority over `start`, if both are present.
 
 * `ICE`
 
@@ -847,6 +943,32 @@ Optionally included keys are:
 		offer, it will be removed and will be missing in the outgoing offer; and if a given crypto
 		suite was not present in the received offer, it will not be added to it.
 
+	- `pad`
+
+		RFC 4568 (section 6.1) is somewhat ambiguous regarding the base64 encoding format of
+		`a=crypto` parameters added to an SDP body. The default interpretation is that trailing
+		`=` characters used for padding should be omitted. With this flag set, these padding
+		characters will be left in place.
+
+	- `lifetime`
+
+		Add the key lifetime parameter `2^31` to each crypto key.
+
+* `OSRTP`
+
+	Similar to `SDES` but controls OSRTP behaviour. Default behaviour is to pass through
+	OSRTP negotiations. Supported options:
+
+	- `offer`
+
+		When processing a non-OSRTP offer, convert it to an OSRTP offer. Will result
+		in RTP/SRTP transcoding if the OSRTP offer is accepted.
+
+	- `accept`
+
+		When processing a non-OSRTP answer in response to an OSRTP offer, accept the
+		OSRTP offer anyway. Results in RTP/SRTP transcoding.
+
 * `record call`
 
 	Contains one of the strings `yes`, `no`, `on` or `off`. This tells the rtpengine
@@ -942,6 +1064,9 @@ Optionally included keys are:
 		e.g. `opus/48000/2/32000`. In this case, all format parameters (clock rate,
 		channels) must also be specified.
 
+		Additional options that can be appended to the codec string with additional slashes
+		are ptime and the `fmtp` string, for example `iLBC/8000/1///mode=30`.
+
 		As a special case, if the `strip=all` option has been used and the `transcode`
 		option is used on a codec that was originally present in the offer, then
 		*rtpengine* will treat this codec the same as if it had been used with the `offer`
@@ -1003,6 +1128,66 @@ Optionally included keys are:
 	This is the reciprocal to `ptime`. It sets the ptime to be used towards the endpoint
 	who has sent the offer. It will be inserted in the `answer` SDP. This option is also
 	ignored in `answer` messages.
+
+* `T.38`
+
+	Contains a list of strings. Each string is a flag that controls the behaviour regarding
+	T.38 transcoding. These flags are ignored if the message is not an `offer`.
+	Recognised flags are:
+
+	- `decode`
+
+		If the received SDP contains a media section with an `image` type, `UDPTL`
+		transport, and `t38` format string, this flag instructs *rtpengine* to convert
+		this media section into an `audio` type using RTP as transport protocol.
+		Other transport protocols (such as SRTP) can be selected using `transport protocol`
+		as described above.
+
+		The default audio codecs to be offered are `PCMU` and `PCMA`. Other audio codecs
+		can be specified using the `transcode=` flag described above, in which case the
+		default codecs will not be offered automatically.
+
+	- `force`
+
+		If the received SDP contains an audio media section using RTP transport, this flag
+		instructs *rtpengine* to convert it to an `image` type media section using the UDPTL
+		protocol. The first supported audio codec that was offered will be used to transport
+		T.30. Default options for T.38 are used for the generated SDP.
+
+	- `stop`
+
+		Stops a currently active T.38 gateway that was previously engaged using the `decode`
+		or `force` flags. This is useful to handle a rejected T.38 offer and revert the
+		session back to media passthrough.
+
+	- `no-ECM`
+
+		Disable support for ECM. Support is enabled by default.
+
+	- `no-V.17`
+
+		Disable support for V.17. Support is enabled by default.
+
+	- `no-V.27ter`
+
+		Disable support for V.27ter. Support is enabled by default.
+
+	- `no-V.29`
+
+		Disable support for V.29. Support is enabled by default.
+
+	- `no-V.34`
+
+		Disable support for V.34. Support is enabled by default.
+
+	- `no-IAF`
+
+		Disable support for IAF. Support is enabled by default.
+
+	- `FEC`
+
+		Use UDPTL FEC instead of redundancy. Only useful with `T.38=force` as
+		it's a negotiated parameter.
 
 * `supports`
 
@@ -1424,12 +1609,13 @@ and stopped independently of each other.
 
 Only available if compiled with transcoding support. The message must contain the key `call-id` and one
 of the participant selection keys described under the `block DTMF` message (such as `from-tag`,
-`address`, or `label`).
+`address`, or `label`). Alternatively, the `all` flag can be set to play the media to all involved
+call parties.
 
 Starts playback of a provided media file to the selected call participant. The format of the media file
 can be anything that is supported by *ffmpeg*, for example a `.wav` or `.mp3` file. It will automatically
 be resampled and transcoded to the appropriate sampling rate and codec. The selected participant's first
-listed (preferred) codec that is supported will be chosed for this purpose.
+listed (preferred) codec that is supported will be chosen for this purpose.
 
 Media files can be provided through one of these keys:
 
@@ -1459,3 +1645,136 @@ the media file could be determined. The duration is given as in integer represen
 Stops the playback previously started by a `play media` message. Media playback stops automatically when
 the end of the media file is reached, so this message is only useful for prematurely stopping playback.
 The same participant selection keys as for the `play media` message can and must be used.
+
+`play DTMF` Message
+-------------------
+
+Instructs *rtpengine* to inject a DTMF tone or event into a running audio stream. A call participant must
+be selected in the same way as described under the `play media` message above (including the possibility
+of using the `all` flag). The selected call participant is the one generating the DTMF event, not the
+one receiving it.
+
+The dictionary key `code` must be present in the message, indicating the DTMF event to be generated. It can
+be either an integer with values 0-15, or a string containing a single character
+(`0` - `9`, `*`, `#`, `A` - `D`). Additional optional dictionary keys are: `duration` indicating the duration
+of the event in milliseconds (defaults to 250 ms, with a minimum of 100 and a maximum of 5000);
+`volume` indicating the volume in absolute decibels (defaults to -8 dB, with 0 being the maximum volume and
+positive integers being interpreted as negative); and `pause` indicating the pause in between consecutive
+DTMF events in milliseconds (defaults to 100 ms, with a minimum of 100 and a maximum of 5000).
+
+This message can be used to implement `application/dtmf-relay` or `application/dtmf` payloads carried
+in SIP INFO messages. Multiple DTMF events can be queued up by issuing multiple consecutive
+`play DTMF` messages.
+
+If the destination participant supports the `telephone-event` RTP payload type, then it will be used to
+send the DTMF event. Otherwise a PCM DTMF tone will be inserted into the audio stream. Audio samples
+received during a generated DTMF event will be suppressed.
+
+The call must be marked for DTMF injection using the `inject DTMF` flag used in both `offer` and `answer`
+messages. Enabling this flag forces all audio to go through the transcoding engine, even if input and output
+codecs are the same (similar to DTMF transcoding, see above).
+
+`statistics` Message
+--------------------
+
+Returns a set of general statistics metrics with identical content and format as the `list jsonstats` CLI
+command. Sample return dictionary:
+
+	{
+	  "statistics": {
+	    "currentstatistics": {
+	      "sessionsown": 0,
+	      "sessionsforeign": 0,
+	      "sessionstotal": 0,
+	      "transcodedmedia": 0,
+	      "packetrate": 0,
+	      "byterate": 0,
+	      "errorrate": 0
+	    },
+	    "totalstatistics": {
+	      "uptime": "18",
+	      "managedsessions": 0,
+	      "rejectedsessions": 0,
+	      "timeoutsessions": 0,
+	      "silenttimeoutsessions": 0,
+	      "finaltimeoutsessions": 0,
+	      "offertimeoutsessions": 0,
+	      "regularterminatedsessions": 0,
+	      "forcedterminatedsessions": 0,
+	      "relayedpackets": 0,
+	      "relayedpacketerrors": 0,
+	      "zerowaystreams": 0,
+	      "onewaystreams": 0,
+	      "avgcallduration": "0.000000"
+	    },
+	    "intervalstatistics": {
+	      "totalcallsduration": "0.000000",
+	      "minmanagedsessions": 0,
+	      "maxmanagedsessions": 0,
+	      "minofferdelay": "0.000000",
+	      "maxofferdelay": "0.000000",
+	      "avgofferdelay": "0.000000",
+	      "minanswerdelay": "0.000000",
+	      "maxanswerdelay": "0.000000",
+	      "avganswerdelay": "0.000000",
+	      "mindeletedelay": "0.000000",
+	      "maxdeletedelay": "0.000000",
+	      "avgdeletedelay": "0.000000",
+	      "minofferrequestrate": 0,
+	      "maxofferrequestrate": 0,
+	      "avgofferrequestrate": 0,
+	      "minanswerrequestrate": 0,
+	      "maxanswerrequestrate": 0,
+	      "avganswerrequestrate": 0,
+	      "mindeleterequestrate": 0,
+	      "maxdeleterequestrate": 0,
+	      "avgdeleterequestrate": 0
+	    },
+	    "controlstatistics": {
+	      "proxies": [
+		{
+		  "proxy": "127.0.0.1",
+		  "pingcount": 0,
+		  "offercount": 0,
+		  "answercount": 0,
+		  "deletecount": 0,
+		  "querycount": 0,
+		  "listcount": 0,
+		  "startreccount": 0,
+		  "stopreccount": 0,
+		  "startfwdcount": 0,
+		  "stopfwdcount": 0,
+		  "blkdtmfcount": 0,
+		  "unblkdtmfcount": 0,
+		  "blkmedia": 0,
+		  "unblkmedia": 0,
+		  "playmedia": 0,
+		  "stopmedia": 0,
+		  "playdtmf": 0,
+		  "statistics": 0,
+		  "errorcount": 0
+		}
+	      ],
+	      "totalpingcount": 0,
+	      "totaloffercount": 0,
+	      "totalanswercount": 0,
+	      "totaldeletecount": 0,
+	      "totalquerycount": 0,
+	      "totallistcount": 0,
+	      "totalstartreccount": 0,
+	      "totalstopreccount": 0,
+	      "totalstartfwdcount": 0,
+	      "totalstopfwdcount": 0,
+	      "totalblkdtmfcount": 0,
+	      "totalunblkdtmfcount": 0,
+	      "totalblkmedia": 0,
+	      "totalunblkmedia": 0,
+	      "totalplaymedia": 0,
+	      "totalstopmedia": 0,
+	      "totalplaydtmf": 0,
+	      "totalstatistics": 0,
+	      "totalerrorcount": 0
+	    }
+	  },
+	  "result": "ok"
+	}

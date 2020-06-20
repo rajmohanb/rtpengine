@@ -28,6 +28,7 @@
 #include "main.h"
 #include "load.h"
 #include "media_player.h"
+#include "dtmf.h"
 
 
 static pcre *info_re;
@@ -540,11 +541,118 @@ INLINE void ng_sdes_option(struct sdp_ng_flags *out, str *s, void *dummy) {
 		case CSH_LOOKUP("AUTHENTICATED_SRTP"):
 			out->sdes_authenticated_srtp = 1;
 			break;
+		case CSH_LOOKUP("lifetime"):
+			out->sdes_lifetime = 1;
+			break;
+		case CSH_LOOKUP("pad"):
+			out->sdes_pad = 1;
+			break;
 		default:
 			ilog(LOG_WARN, "Unknown 'SDES' flag encountered: '"STR_FORMAT"'",
 					STR_FMT(s));
 	}
 }
+
+INLINE void ng_osrtp_option(struct sdp_ng_flags *out, str *s, void *dummy) {
+	switch (__csh_lookup(s)) {
+		case CSH_LOOKUP("accept"):
+			out->osrtp_accept = 1;
+			break;
+		case CSH_LOOKUP("offer"):
+			out->osrtp_offer = 1;
+			break;
+		default:
+			ilog(LOG_WARN, "Unknown 'OSRTP' flag encountered: '" STR_FORMAT "'",
+					STR_FMT(s));
+	}
+}
+
+
+#ifdef WITH_TRANSCODING
+INLINE void ng_t38_option(struct sdp_ng_flags *out, str *s, void *dummy) {
+	str_hyphenate(s);
+	switch (__csh_lookup(s)) {
+		case CSH_LOOKUP("decode"):
+			out->t38_decode = 1;
+			break;
+		case CSH_LOOKUP("force"):
+			out->t38_force = 1;
+			break;
+		case CSH_LOOKUP("stop"):
+			out->t38_stop = 1;
+			break;
+		case CSH_LOOKUP("no-ECM"):
+			out->t38_no_ecm = 1;
+			break;
+		case CSH_LOOKUP("no-V17"):
+			out->t38_no_v17 = 1;
+			break;
+		case CSH_LOOKUP("no-V.17"):
+			out->t38_no_v17 = 1;
+			break;
+		case CSH_LOOKUP("no-V.27ter"):
+			out->t38_no_v27ter = 1;
+			break;
+		case CSH_LOOKUP("no-V27ter"):
+			out->t38_no_v27ter = 1;
+			break;
+		case CSH_LOOKUP("no-V29"):
+			out->t38_no_v29 = 1;
+			break;
+		case CSH_LOOKUP("no-V.29"):
+			out->t38_no_v29 = 1;
+			break;
+		case CSH_LOOKUP("no-V34"):
+			out->t38_no_v34 = 1;
+			break;
+		case CSH_LOOKUP("no-V.34"):
+			out->t38_no_v34 = 1;
+			break;
+		case CSH_LOOKUP("no-IAF"):
+			out->t38_no_iaf = 1;
+			break;
+		case CSH_LOOKUP("no-ecm"):
+			out->t38_no_ecm = 1;
+			break;
+		case CSH_LOOKUP("no-v17"):
+			out->t38_no_v17 = 1;
+			break;
+		case CSH_LOOKUP("no-v.17"):
+			out->t38_no_v17 = 1;
+			break;
+		case CSH_LOOKUP("no-v.27ter"):
+			out->t38_no_v27ter = 1;
+			break;
+		case CSH_LOOKUP("no-v27ter"):
+			out->t38_no_v27ter = 1;
+			break;
+		case CSH_LOOKUP("no-v29"):
+			out->t38_no_v29 = 1;
+			break;
+		case CSH_LOOKUP("no-v.29"):
+			out->t38_no_v29 = 1;
+			break;
+		case CSH_LOOKUP("no-v34"):
+			out->t38_no_v34 = 1;
+			break;
+		case CSH_LOOKUP("no-v.34"):
+			out->t38_no_v34 = 1;
+			break;
+		case CSH_LOOKUP("no-iaf"):
+			out->t38_no_iaf = 1;
+			break;
+		case CSH_LOOKUP("FEC"):
+			out->t38_fec = 1;
+			break;
+		case CSH_LOOKUP("fec"):
+			out->t38_fec = 1;
+			break;
+		default:
+			ilog(LOG_WARN, "Unknown 'T.38' flag encountered: '" STR_FORMAT "'",
+					STR_FMT(s));
+	}
+}
+#endif
 
 
 static void call_ng_flags_list(struct sdp_ng_flags *out, bencode_item_t *input, const char *key,
@@ -604,14 +712,14 @@ static void call_ng_flags_str_ht(struct sdp_ng_flags *out, str *s, void *htp) {
 	str *s_copy = str_slice_dup(s);
 	GHashTable **ht = htp;
 	if (!*ht)
-		*ht = g_hash_table_new_full(str_hash, str_equal, str_slice_free, NULL);
+		*ht = g_hash_table_new_full(str_case_hash, str_case_equal, str_slice_free, NULL);
 	g_hash_table_replace(*ht, s_copy, s_copy);
 }
 #ifdef WITH_TRANSCODING
 static void call_ng_flags_str_ht_split(struct sdp_ng_flags *out, str *s, void *htp) {
 	GHashTable **ht = htp;
 	if (!*ht)
-		*ht = g_hash_table_new_full(str_hash, str_equal, str_slice_free, str_slice_free);
+		*ht = g_hash_table_new_full(str_case_hash, str_case_equal, str_slice_free, str_slice_free);
 	str splitter = *s;
 	while (1) {
 		g_hash_table_replace(*ht, str_slice_dup(&splitter), str_slice_dup(s));
@@ -695,14 +803,22 @@ static void call_ng_flags_flags(struct sdp_ng_flags *out, str *s, void *dummy) {
 		case CSH_LOOKUP("asymmetric-codecs"):
 			out->asymmetric_codecs = 1;
 			break;
+		case CSH_LOOKUP("symmetric-codecs"):
+			out->symmetric_codecs = 1;
+			break;
+		case CSH_LOOKUP("inject-DTMF"):
+			out->inject_dtmf = 1;
+			break;
 		case CSH_LOOKUP("pad-crypto"):
-			out->pad_crypto = 1;
+			out->sdes_pad = 1;
 			break;
 		default:
 			// handle values aliases from other dictionaries
 			if (call_ng_flags_prefix(out, s, "SDES-no-", call_ng_flags_str_ht, &out->sdes_no))
 				return;
 			if (call_ng_flags_prefix(out, s, "SDES-", ng_sdes_option, NULL))
+				return;
+			if (call_ng_flags_prefix(out, s, "OSRTP-", ng_osrtp_option, NULL))
 				return;
 			if (out->opmode == OP_OFFER) {
 				if (call_ng_flags_prefix(out, s, "codec-strip-", call_ng_flags_str_ht,
@@ -723,6 +839,10 @@ static void call_ng_flags_flags(struct sdp_ng_flags *out, str *s, void *dummy) {
 					return;
 				if (call_ng_flags_prefix(out, s, "codec-set-", call_ng_flags_str_ht_split,
 							&out->codec_set))
+					return;
+				if (call_ng_flags_prefix(out, s, "T38-", ng_t38_option, NULL))
+					return;
+				if (call_ng_flags_prefix(out, s, "T.38-", ng_t38_option, NULL))
 					return;
 #endif
 			}
@@ -767,6 +887,20 @@ static void call_ng_process_flags(struct sdp_ng_flags *out, bencode_item_t *inpu
 		bencode_get_str(it->sibling, &out->received_from_address);
 	}
 
+	if (bencode_dictionary_get_str(input, "drop-traffic", &s)) {
+		switch (__csh_lookup(&s)) {
+			case CSH_LOOKUP("start"):
+				out->drop_traffic_start = 1;
+				break;
+			case CSH_LOOKUP("stop"):
+				out->drop_traffic_stop = 1;
+				break;
+			default:
+				ilog(LOG_WARN, "Unknown 'drop-traffic' flag encountered: '"STR_FORMAT"'",
+						STR_FMT(&s));
+		}
+	}
+
 	if (bencode_dictionary_get_str(input, "ICE", &s)) {
 		switch (__csh_lookup(&s)) {
 			case CSH_LOOKUP("remove"):
@@ -805,6 +939,11 @@ static void call_ng_process_flags(struct sdp_ng_flags *out, bencode_item_t *inpu
 
 	call_ng_flags_list(out, input, "rtcp-mux", call_ng_flags_rtcp_mux, NULL);
 	call_ng_flags_list(out, input, "SDES", ng_sdes_option, NULL);
+	call_ng_flags_list(out, input, "OSRTP", ng_osrtp_option, NULL);
+#ifdef WITH_TRANSCODING
+	call_ng_flags_list(out, input, "T38", ng_t38_option, NULL);
+	call_ng_flags_list(out, input, "T.38", ng_t38_option, NULL);
+#endif
 
 	bencode_get_alt(input, "transport-protocol", "transport protocol", &out->transport_protocol_str);
 	out->transport_protocol = transport_protocol(&out->transport_protocol_str);
@@ -1021,6 +1160,14 @@ static const char *call_offer_answer_ng(bencode_item_t *input,
 		recording_start(call, NULL, &flags.metadata);
 	}
 
+	if (flags.drop_traffic_start) {
+		call->drop_traffic = 1;
+	}
+
+	if (flags.drop_traffic_stop) {
+		call->drop_traffic = 0;
+	}
+
 	ret = monologue_offer_answer(monologue, &streams, &flags);
 	if (!ret) {
 		// SDP fragments for trickle ICE are consumed with no replacement returned
@@ -1230,6 +1377,7 @@ static void ng_stats_media(bencode_item_t *list, const struct call_media *m,
 	BF_M("unidirectional", UNIDIRECTIONAL);
 	BF_M("loop check", LOOP_CHECK);
 	BF_M("transcoding", TRANSCODE);
+	BF_M("generator/sink", GENERATOR);
 
 stats:
 	for (l = m->streams.head; l; l = l->next) {
@@ -1500,6 +1648,9 @@ static const char *media_block_match(struct call **call, struct call_monologue *
 		return "Unknown call-id";
 
 	// directional?
+	if (flags->all) // explicitly non-directional, so skip the rest
+		return NULL;
+
 	if (flags->label.s) {
 		*monologue = g_hash_table_lookup((*call)->labels, &flags->label);
 		if (!*monologue)
@@ -1745,14 +1896,23 @@ out:
 
 
 #ifdef WITH_TRANSCODING
-static const char *play_media_select_party(struct call **call, struct call_monologue **monologue,
+static const char *play_media_select_party(struct call **call, GQueue *monologues,
 		bencode_item_t *input)
 {
-	const char *err = media_block_match(call, monologue, NULL, input);
+	struct call_monologue *monologue;
+	struct sdp_ng_flags flags;
+
+	g_queue_init(monologues);
+
+	const char *err = media_block_match(call, &monologue, &flags, input);
 	if (err)
 		return err;
-	if (!*monologue)
+	if (flags.all)
+		g_queue_append(monologues, &(*call)->monologues);
+	else if (!monologue)
 		return "No participant party specified";
+	else
+		g_queue_push_tail(monologues, monologue);
 	return NULL;
 }
 #endif
@@ -1762,42 +1922,47 @@ const char *call_play_media_ng(bencode_item_t *input, bencode_item_t *output) {
 #ifdef WITH_TRANSCODING
 	str str;
 	struct call *call;
-	struct call_monologue *monologue;
+	GQueue monologues;
 	const char *err = NULL;
 	long long db_id;
 
-	err = play_media_select_party(&call, &monologue, input);
+	err = play_media_select_party(&call, &monologues, input);
 	if (err)
 		goto out;
 
-	if (!monologue->player)
-		monologue->player = media_player_new(monologue);
+	for (GList *l = monologues.head; l; l = l->next) {
+		struct call_monologue *monologue = l->data;
 
-	err = "No media file specified";
-	if (bencode_dictionary_get_str(input, "file", &str)) {
-		err = "Failed to start media playback from file";
-		if (media_player_play_file(monologue->player, &str))
-			goto out;
-	}
-	else if (bencode_dictionary_get_str(input, "blob", &str)) {
-		err = "Failed to start media playback from blob";
-		if (media_player_play_blob(monologue->player, &str))
-			goto out;
-	}
-	else if ((db_id = bencode_dictionary_get_int_str(input, "db-id", 0)) > 0) {
-		err = "Failed to start media playback from database";
-		if (media_player_play_db(monologue->player, db_id))
-			goto out;
-	}
-	else
-		goto out;
+		if (!monologue->player)
+			monologue->player = media_player_new(monologue);
 
-	if (monologue->player->duration)
-		bencode_dictionary_add_integer(output, "duration", monologue->player->duration);
+		err = "No media file specified";
+		if (bencode_dictionary_get_str(input, "file", &str)) {
+			err = "Failed to start media playback from file";
+			if (media_player_play_file(monologue->player, &str))
+				goto out;
+		}
+		else if (bencode_dictionary_get_str(input, "blob", &str)) {
+			err = "Failed to start media playback from blob";
+			if (media_player_play_blob(monologue->player, &str))
+				goto out;
+		}
+		else if ((db_id = bencode_dictionary_get_int_str(input, "db-id", 0)) > 0) {
+			err = "Failed to start media playback from database";
+			if (media_player_play_db(monologue->player, db_id))
+				goto out;
+		}
+		else
+			goto out;
+
+		if (l == monologues.head && monologue->player->duration)
+			bencode_dictionary_add_integer(output, "duration", monologue->player->duration);
+	}
 
 	err = NULL;
 
 out:
+	g_queue_clear(&monologues);
 	if (call) {
 		rwlock_unlock_w(&call->master_lock);
 		obj_put(call);
@@ -1812,21 +1977,121 @@ out:
 const char *call_stop_media_ng(bencode_item_t *input, bencode_item_t *output) {
 #ifdef WITH_TRANSCODING
 	struct call *call;
-	struct call_monologue *monologue;
+	GQueue monologues;
 	const char *err = NULL;
 
-	err = play_media_select_party(&call, &monologue, input);
+	err = play_media_select_party(&call, &monologues, input);
 	if (err)
 		goto out;
 
-	if (!monologue->player)
-		return "Not currently playing media";
+	for (GList *l = monologues.head; l; l = l->next) {
+		struct call_monologue *monologue = l->data;
 
-	media_player_stop(monologue->player);
+		err = "Not currently playing media";
+		if (!monologue->player)
+			goto out;
+
+		media_player_stop(monologue->player);
+	}
 
 	err = NULL;
 
 out:
+	g_queue_clear(&monologues);
+	if (call) {
+		rwlock_unlock_w(&call->master_lock);
+		obj_put(call);
+	}
+	return err;
+#else
+	return "unsupported";
+#endif
+}
+
+
+const char *call_play_dtmf_ng(bencode_item_t *input, bencode_item_t *output) {
+#ifdef WITH_TRANSCODING
+	struct call *call;
+	GQueue monologues;
+	str str;
+	const char *err = NULL;
+
+	err = play_media_select_party(&call, &monologues, input);
+	if (err)
+		goto out;
+
+	// validate input parameters
+
+	long long duration = bencode_dictionary_get_int_str(input, "duration", 250);
+	if (duration < 100) {
+		duration = 100;
+		ilog(LOG_WARN, "Invalid duration (%lli ms) specified, using 100 ms instead", duration);
+	}
+	else if (duration > 5000) {
+		duration = 5000;
+		ilog(LOG_WARN, "Invalid duration (%lli ms) specified, using 5000 ms instead", duration);
+	}
+
+	long long pause = bencode_dictionary_get_int_str(input, "pause", 100);
+	if (pause < 100) {
+		pause = 100;
+		ilog(LOG_WARN, "Invalid pause (%lli ms) specified, using 100 ms instead", pause);
+	}
+	else if (pause > 5000) {
+		pause = 5000;
+		ilog(LOG_WARN, "Invalid pause (%lli ms) specified, using 5000 ms instead", pause);
+	}
+
+	long long code = bencode_dictionary_get_int_str(input, "code", -1);
+	err = "Out of range 'code' specified";
+	if (code == -1) {
+		// try a string code
+		err = "No valid 'code' specified";
+		if (!bencode_dictionary_get_str(input, "code", &str))
+			goto out;
+		err = "Given 'code' is not a single digit";
+		if (str.len != 1)
+			goto out;
+		code = dtmf_code_from_char(str.s[0]);
+		err = "Invalid 'code' character";
+		if (code == -1)
+			goto out;
+	}
+	else if (code < 0)
+		goto out;
+	else if (code > 15)
+		goto out;
+
+	long long volume = bencode_dictionary_get_int_str(input, "volume", 8);
+	if (volume > 0)
+		volume *= -1;
+
+	for (GList *l = monologues.head; l; l = l->next) {
+		struct call_monologue *monologue = l->data;
+
+		// find a usable output media
+		struct call_media *media;
+		for (GList *l = monologue->medias.head; l; l = l->next) {
+			media = l->data;
+			if (media->type_id != MT_AUDIO)
+				continue;
+			if (!media->dtmf_injector)
+				continue;
+			goto found;
+		}
+
+		err = "Monologue has no media capable of DTMF injection";
+		// XXX fall back to generating a secondary stream
+		goto out;
+
+found:;
+		err = dtmf_inject(media, code, volume, duration, pause);
+		if (err)
+			break;
+	}
+
+out:
+	g_queue_clear(&monologues);
 	if (call) {
 		rwlock_unlock_w(&call->master_lock);
 		obj_put(call);

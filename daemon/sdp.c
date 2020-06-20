@@ -35,6 +35,7 @@ struct sdp_origin {
 };
 
 struct sdp_connection {
+	str s;
 	struct network_address address;
 	int parsed:1;
 };
@@ -69,6 +70,7 @@ struct sdp_media {
 	int port_count;
 
 	struct sdp_connection connection;
+	const char *c_line_pos;
 	int rr, rs;
 	struct sdp_attributes attributes;
 	GQueue format_list; /* list of slice-alloc'd str objects */
@@ -169,6 +171,31 @@ struct attribute_fmtp {
 	unsigned int payload_type;
 };
 
+struct attribute_t38faxratemanagement {
+	enum {
+		RM_UNKNOWN = 0,
+		RM_LOCALTCF,
+		RM_TRANSFERREDTCF,
+	} rm;
+};
+
+struct attribute_t38faxudpec {
+	enum {
+		EC_UNKNOWN = 0,
+		EC_NONE,
+		EC_REDUNDANCY,
+		EC_FEC,
+	} ec;
+};
+
+struct attribute_t38faxudpecdepth {
+	str minred_str;
+	str maxred_str;
+
+	int minred;
+	int maxred;
+};
+
 struct sdp_attribute {	/* example: a=rtpmap:8 PCMA/8000 */
 	str full_line,	/* including a= and \r\n */
 	    line_value,	/* without a= and without \r\n */
@@ -203,6 +230,17 @@ struct sdp_attribute {	/* example: a=rtpmap:8 PCMA/8000 */
 		ATTR_IGNORE,
 		ATTR_RTPENGINE,
 		ATTR_PTIME,
+		ATTR_RTCP_FB,
+		ATTR_T38FAXVERSION,
+		ATTR_T38FAXUDPEC,
+		ATTR_T38FAXUDPECDEPTH,
+		ATTR_T38FAXUDPFECMAXSPAN,
+		ATTR_T38FAXMAXDATAGRAM,
+		ATTR_T38FAXMAXIFP,
+		ATTR_T38FAXFILLBITREMOVAL,
+		ATTR_T38FAXTRANSCODINGMMR,
+		ATTR_T38FAXTRANSCODINGJBIG,
+		ATTR_T38FAXRATEMANAGEMENT,
 		ATTR_END_OF_CANDIDATES,
 	} attr;
 
@@ -216,13 +254,17 @@ struct sdp_attribute {	/* example: a=rtpmap:8 PCMA/8000 */
 		struct attribute_setup setup;
 		struct attribute_rtpmap rtpmap;
 		struct attribute_fmtp fmtp;
+		struct attribute_t38faxudpec t38faxudpec;
+		int i;
+		struct attribute_t38faxudpecdepth t38faxudpecdepth;
+		struct attribute_t38faxratemanagement t38faxratemanagement;
 	} u;
 };
 
 
 
 static char __id_buf[6*2 + 1]; // 6 hex encoded characters
-static const str instance_id = STR_CONST_INIT(__id_buf);
+const str rtpe_instance_id = STR_CONST_INIT(__id_buf);
 
 
 
@@ -307,6 +349,8 @@ static int parse_origin(str *value_str, struct sdp_origin *output) {
 static int parse_connection(str *value_str, struct sdp_connection *output) {
 	if (output->parsed)
 		return -1;
+
+	output->s = *value_str;
 
 	EXTRACT_NETWORK_ADDRESS(address);
 
@@ -768,6 +812,71 @@ static int parse_attribute_fmtp(struct sdp_attribute *output) {
 	return 0;
 }
 
+static int parse_attribute_int(struct sdp_attribute *output, int attr_id, int defval) {
+	output->attr = attr_id;
+	output->u.i = str_to_i(&output->value, defval);
+	return 0;
+}
+
+// XXX combine this with parse_attribute_setup ?
+static int parse_attribute_t38faxudpec(struct sdp_attribute *output) {
+	output->attr = ATTR_T38FAXUDPEC;
+
+	switch (__csh_lookup(&output->value)) {
+		case CSH_LOOKUP("t38UDPNoEC"):
+			output->u.t38faxudpec.ec = EC_NONE;
+			break;
+		case CSH_LOOKUP("t38UDPRedundancy"):
+			output->u.t38faxudpec.ec = EC_REDUNDANCY;
+			break;
+		case CSH_LOOKUP("t38UDPFEC"):
+			output->u.t38faxudpec.ec = EC_FEC;
+			break;
+		default:
+			output->u.t38faxudpec.ec = EC_UNKNOWN;
+			break;
+	}
+
+	return 0;
+}
+
+// XXX combine this with parse_attribute_setup ?
+static int parse_attribute_t38faxratemanagement(struct sdp_attribute *output) {
+	output->attr = ATTR_T38FAXRATEMANAGEMENT;
+
+	switch (__csh_lookup(&output->value)) {
+		case CSH_LOOKUP("localTFC"):
+			output->u.t38faxratemanagement.rm = RM_LOCALTCF;
+			break;
+		case CSH_LOOKUP("transferredTCF"):
+			output->u.t38faxratemanagement.rm = RM_TRANSFERREDTCF;
+			break;
+		default:
+			output->u.t38faxratemanagement.rm = RM_UNKNOWN;
+			break;
+	}
+
+	return 0;
+}
+
+static int parse_attribute_t38faxudpecdepth(struct sdp_attribute *output) {
+	PARSE_DECL;
+	struct attribute_t38faxudpecdepth *a;
+
+	output->attr = ATTR_T38FAXUDPECDEPTH;
+	a = &output->u.t38faxudpecdepth;
+
+	PARSE_INIT;
+	EXTRACT_TOKEN(u.t38faxudpecdepth.minred_str);
+	a->maxred_str = *value_str;
+
+	a->minred = str_to_i(&a->minred_str, 0);
+	a->maxred = str_to_i(&a->maxred_str, -1);
+
+	return 0;
+}
+
+
 static int parse_attribute(struct sdp_attribute *a) {
 	int ret;
 
@@ -869,6 +978,39 @@ static int parse_attribute(struct sdp_attribute *a) {
 		case CSH_LOOKUP("end-of-candidates"):
 			a->attr = ATTR_END_OF_CANDIDATES;
 			break;
+		case CSH_LOOKUP("rtcp-fb"):
+			a->attr = ATTR_RTCP_FB;
+			break;
+		case CSH_LOOKUP("T38FaxVersion"):
+			ret = parse_attribute_int(a, ATTR_T38FAXVERSION, -1);
+			break;
+		case CSH_LOOKUP("T38FaxUdpEC"):
+			ret = parse_attribute_t38faxudpec(a);
+			break;
+		case CSH_LOOKUP("T38FaxUdpECDepth"):
+			ret = parse_attribute_t38faxudpecdepth(a);
+			break;
+		case CSH_LOOKUP("T38FaxUdpFECMaxSpan"):
+			ret = parse_attribute_int(a, ATTR_T38FAXUDPFECMAXSPAN, 0);
+			break;
+		case CSH_LOOKUP("T38FaxMaxDatagram"):
+			ret = parse_attribute_int(a, ATTR_T38FAXMAXDATAGRAM, -1);
+			break;
+		case CSH_LOOKUP("T38FaxMaxIFP"):
+			ret = parse_attribute_int(a, ATTR_T38FAXMAXIFP, -1);
+			break;
+		case CSH_LOOKUP("T38FaxFillBitRemoval"):
+			a->attr = ATTR_T38FAXFILLBITREMOVAL;
+			break;
+		case CSH_LOOKUP("T38FaxTranscodingMMR"):
+			a->attr = ATTR_T38FAXTRANSCODINGMMR;
+			break;
+		case CSH_LOOKUP("T38FaxTranscodingJBIG"):
+			a->attr = ATTR_T38FAXTRANSCODINGJBIG;
+			break;
+		case CSH_LOOKUP("T38FaxRateManagement"):
+			ret = parse_attribute_t38faxratemanagement(a);
+			break;
 	}
 
 	return ret;
@@ -952,6 +1094,9 @@ new_session:
 				break;
 
 			case 'm':
+				if (media && !media->c_line_pos)
+					media->c_line_pos = b;
+
 				media = g_slice_alloc0(sizeof(*media));
 				media->session = session;
 				attrs_init(&media->attributes);
@@ -973,6 +1118,9 @@ new_session:
 				break;
 
 			case 'a':
+				if (media && !media->c_line_pos)
+					media->c_line_pos = b;
+
 				attr = g_slice_alloc0(sizeof(*attr));
 
 				attr->full_line.s = b;
@@ -1002,6 +1150,9 @@ new_session:
 				break;
 
 			case 'b':
+				if (media && !media->c_line_pos)
+					media->c_line_pos = b;
+
 				/* RR:0 */
 				if (line_end - value < 4)
 					break;
@@ -1013,6 +1164,11 @@ new_session:
 						(line_end - value == 4 && value[3] == '0') ? 0 : 1;
 				break;
 
+			case 'k':
+				if (media && !media->c_line_pos)
+					media->c_line_pos = b;
+				break;
+
 			case 's':
 			case 'i':
 			case 'u':
@@ -1021,7 +1177,6 @@ new_session:
 			case 't':
 			case 'r':
 			case 'z':
-			case 'k':
 				break;
 
 			default:
@@ -1110,7 +1265,7 @@ static int __rtp_payload_types(struct stream_params *sp, struct sdp_media *media
 	struct sdp_attribute *attr;
 	int ret = 0;
 
-	if (!sp->protocol || !sp->protocol->rtp)
+	if (!proto_is_rtp(sp->protocol))
 		return 0;
 
 	/* first go through a=rtpmap and build a hash table of attrs */
@@ -1224,6 +1379,63 @@ no_cand:
 		sp->ice_pwd = attr->value;
 }
 
+static void __sdp_t38(struct stream_params *sp, struct sdp_media *media) {
+	struct sdp_attribute *attr;
+	struct t38_options *to = &sp->t38_options;
+
+	attr = attr_get_by_id(&media->attributes, ATTR_T38FAXVERSION);
+	if (attr)
+		to->version = attr->u.i;
+
+	attr = attr_get_by_id(&media->attributes, ATTR_T38FAXUDPEC);
+	if (attr) {
+		if (attr->u.t38faxudpec.ec == EC_REDUNDANCY)
+			to->max_ec_entries = to->min_ec_entries = 3; // defaults
+		else if (attr->u.t38faxudpec.ec == EC_FEC) {
+			// defaults
+			to->max_ec_entries = to->min_ec_entries = 3;
+			to->fec_span = 3;
+		}
+		// else default to 0
+	}
+	else // no EC specified, defaults:
+		to->max_ec_entries = to->min_ec_entries = 3; // defaults
+
+	attr = attr_get_by_id(&media->attributes, ATTR_T38FAXUDPECDEPTH);
+	if (attr) {
+		to->min_ec_entries = attr->u.t38faxudpecdepth.minred;
+		to->max_ec_entries = attr->u.t38faxudpecdepth.maxred;
+	}
+
+	attr = attr_get_by_id(&media->attributes, ATTR_T38FAXUDPFECMAXSPAN);
+	if (attr)
+		to->fec_span = attr->u.i;
+
+	attr = attr_get_by_id(&media->attributes, ATTR_T38FAXMAXDATAGRAM);
+	if (attr)
+		to->max_datagram = attr->u.i;
+
+	attr = attr_get_by_id(&media->attributes, ATTR_T38FAXMAXIFP);
+	if (attr)
+		to->max_ifp = attr->u.i;
+
+	attr = attr_get_by_id(&media->attributes, ATTR_T38FAXFILLBITREMOVAL);
+	if (attr && (!attr->value.len || str_cmp(&attr->value, "0")))
+		to->fill_bit_removal = 1;
+
+	attr = attr_get_by_id(&media->attributes, ATTR_T38FAXTRANSCODINGMMR);
+	if (attr && (!attr->value.len || str_cmp(&attr->value, "0")))
+		to->transcoding_mmr = 1;
+
+	attr = attr_get_by_id(&media->attributes, ATTR_T38FAXTRANSCODINGJBIG);
+	if (attr && (!attr->value.len || str_cmp(&attr->value, "0")))
+		to->transcoding_jbig = 1;
+
+	attr = attr_get_by_id(&media->attributes, ATTR_T38FAXRATEMANAGEMENT);
+	if (attr)
+		to->local_tcf = (attr->u.t38faxratemanagement.rm == RM_LOCALTCF) ? 1 : 0;
+}
+
 
 /* XXX split this function up */
 int sdp_streams(const GQueue *sessions, GQueue *streams, struct sdp_ng_flags *flags) {
@@ -1264,6 +1476,7 @@ int sdp_streams(const GQueue *sessions, GQueue *streams, struct sdp_ng_flags *fl
 			if (attr && attr->value.s)
 				sp->ptime = str_to_i(&attr->value, 0);
 
+			sp->format_str = media->formats;
 			errstr = "Invalid RTP payload types";
 			if (__rtp_payload_types(sp, media))
 				goto error;
@@ -1325,12 +1538,25 @@ int sdp_streams(const GQueue *sessions, GQueue *streams, struct sdp_ng_flags *fl
 						sp->fingerprint.hash_func->num_bytes);
 			}
 
+			// OSRTP (RFC 8643)
+			if (sp->protocol && sp->protocol->rtp && !sp->protocol->srtp
+					&& sp->protocol->osrtp_proto)
+			{
+				if (sp->fingerprint.hash_func || sp->sdes_params.length)
+					sp->protocol = &transport_protocols[sp->protocol->osrtp_proto];
+			}
+
 			// a=mid
 			attr = attr_get_by_id(&media->attributes, ATTR_MID);
 			if (attr)
 				sp->media_id = attr->value;
 
+			// be ignorant about the contents
+			if (attr_get_by_id(&media->attributes, ATTR_RTCP_FB))
+				SP_SET(sp, RTCP_FB);
+
 			__sdp_ice(sp, media);
+			__sdp_t38(sp, media);
 
 			/* determine RTCP endpoint */
 
@@ -1455,9 +1681,24 @@ static int replace_transport_protocol(struct sdp_chopper *chop,
 	return 0;
 }
 
+static int replace_format_str(struct sdp_chopper *chop,
+		struct sdp_media *media, struct call_media *cm)
+{
+	if (!cm->format_str.s)
+		return 0;
+	chopper_append_c(chop, " ");
+	chopper_append_str(chop, &cm->format_str);
+	if (skip_over(chop, &media->formats))
+		return -1;
+	return 0;
+}
+
 static int replace_codec_list(struct sdp_chopper *chop,
 		struct sdp_media *media, struct call_media *cm)
 {
+	if (proto_is_not_rtp(cm->protocol))
+		return replace_format_str(chop, media, cm);
+
 	if (cm->codecs_prefs_recv.length == 0)
 		return 0; // legacy protocol or usage error
 
@@ -1487,6 +1728,31 @@ static void insert_codec_parameters(struct sdp_chopper *chop, struct call_media 
 				pt->payload_type,
 				STR_FMT(&pt->format_parameters));
 	}
+}
+
+static void insert_sdp_attributes(struct sdp_chopper *chop, struct call_media *cm) {
+	for (GList *l = cm->sdp_attributes.head; l; l = l->next) {
+		str *s = l->data;
+		chopper_append_printf(chop, "a=" STR_FORMAT "\r\n",
+				STR_FMT(s));
+	}
+}
+
+static int replace_media_type(struct sdp_chopper *chop, struct sdp_media *media, struct call_media *cm) {
+	str *type = &media->media_type;
+
+	if (!cm->type.s)
+		return 0;
+
+	if (copy_up_to(chop, type))
+		return -1;
+
+	chopper_append_str(chop, &cm->type);
+
+	if (skip_over(chop, type))
+		return -1;
+
+	return 0;
 }
 
 static int replace_media_port(struct sdp_chopper *chop, struct sdp_media *media, struct packet_stream *ps) {
@@ -1545,15 +1811,15 @@ static int insert_ice_address(struct sdp_chopper *chop, struct stream_fd *sfd) {
 	return 0;
 }
 
-static int insert_raddr_rport(struct sdp_chopper *chop, struct packet_stream *ps, const struct local_intf *ifa) {
+static int insert_raddr_rport(struct sdp_chopper *chop, struct stream_fd *sfd) {
         char buf[64];
         int len;
 
 	chopper_append_c(chop, " raddr ");
-	call_stream_address46(buf, ps, SAF_ICE, &len, ifa, 0);
+	call_stream_address46(buf, sfd->stream, SAF_ICE, &len, sfd->local_intf, 0);
 	chopper_append(chop, buf, len);
 	chopper_append_c(chop, " rport ");
-	chopper_append_printf(chop, "%u", ps->selected_sfd->socket.local.port);
+	chopper_append_printf(chop, "%u", sfd->socket.local.port);
 
 	return 0;
 }
@@ -1586,6 +1852,22 @@ static int replace_network_address(struct sdp_chopper *chop, struct network_addr
 
 	if (skip_over(chop, &address->address))
 		return -1;
+
+	return 0;
+}
+
+static int synth_session_connection(struct sdp_chopper *chop, struct sdp_media *sdp_media) {
+	if (!sdp_media->session->connection.s.s)
+		return -1;
+
+	if (sdp_media->c_line_pos)
+		copy_up_to_ptr(chop, sdp_media->c_line_pos);
+	else
+		copy_up_to_end_of(chop, chop->input);
+
+	chopper_append_c(chop, "c=");
+	chopper_append_str(chop, &sdp_media->session->connection.s);
+	chopper_append_c(chop, "\n");
 
 	return 0;
 }
@@ -1670,6 +1952,10 @@ static int process_media_attributes(struct sdp_chopper *chop, struct sdp_media *
 
 	for (l = attrs->list.head; l; l = l->next) {
 		attr = l->data;
+
+		// strip all attributes if we're sink and generator - make our own clean SDP
+		if (MEDIA_ISSET(media, GENERATOR))
+			goto strip;
 
 		switch (attr->attr) {
 			case ATTR_ICE:
@@ -1812,7 +2098,7 @@ static void insert_candidate(struct sdp_chopper *chop, struct stream_fd *sfd,
 	chopper_append_c(chop, ice_candidate_type_str(type));
 	/* raddr and rport are required for non-host candidates: rfc5245 section-15.1 */
 	if(type != ICT_HOST)
-		insert_raddr_rport(chop, ps, ifa);
+		insert_raddr_rport(chop, sfd);
 	chopper_append_c(chop, "\r\n");
 }
 
@@ -1942,7 +2228,7 @@ static void insert_crypto1(struct call_media *media, struct sdp_chopper *chop, s
 			p, &state, &save);
 	p += g_base64_encode_close(0, p, &state, &save);
 
-	if (!flags->pad_crypto) {
+	if (!flags->sdes_pad) {
 		// truncate trailing ==
 		while (p > b64_buf && p[-1] == '=')
 			p--;
@@ -1953,6 +2239,8 @@ static void insert_crypto1(struct call_media *media, struct sdp_chopper *chop, s
 	chopper_append_c(chop, cps->params.crypto_suite->name);
 	chopper_append_c(chop, " inline:");
 	chopper_append(chop, b64_buf, p - b64_buf);
+	if (flags->sdes_lifetime)
+		chopper_append_c(chop, "|2^31");
 	if (cps->params.mki_len) {
 		ull = 0;
 		for (i = 0; i < cps->params.mki_len && i < sizeof(ull); i++)
@@ -2045,7 +2333,7 @@ int sdp_replace(struct sdp_chopper *chop, GQueue *sessions, struct call_monologu
 
 		if (flags->loop_protect) {
 			chopper_append_c(chop, "a=rtpengine:");
-			chopper_append_str(chop, &instance_id);
+			chopper_append_str(chop, &rtpe_instance_id);
 			chopper_append_c(chop, "\r\n");
 		}
 
@@ -2063,7 +2351,9 @@ int sdp_replace(struct sdp_chopper *chop, GQueue *sessions, struct call_monologu
 				goto error;
 			ps = j->data;
 
-			if (!flags->ice_force_relay) {
+			if (!flags->ice_force_relay && call_media->type_id != MT_MESSAGE) {
+				if (replace_media_type(chop, sdp_media, call_media))
+					goto error;
 			        if (replace_media_port(chop, sdp_media, ps))
 				        goto error;
 			        if (replace_consecutive_port_count(chop, sdp_media, ps, j))
@@ -2078,6 +2368,13 @@ int sdp_replace(struct sdp_chopper *chop, GQueue *sessions, struct call_monologu
 								flags, 1))
 					        goto error;
 				}
+			}
+			else if (call_media->type_id == MT_MESSAGE) {
+				if (!sdp_media->connection.parsed)
+					if (synth_session_connection(chop, sdp_media))
+						goto error;
+				// leave everything untouched
+				goto next;
 			}
 
 			if (process_media_attributes(chop, sdp_media, flags, call_media))
@@ -2094,7 +2391,10 @@ int sdp_replace(struct sdp_chopper *chop, GQueue *sessions, struct call_monologu
 				chopper_append_c(chop, "\r\n");
 			}
 
-			insert_codec_parameters(chop, call_media);
+			if (proto_is_rtp(call_media->protocol))
+				insert_codec_parameters(chop, call_media);
+
+			insert_sdp_attributes(chop, call_media);
 
 			ps_rtcp = NULL;
 			if (ps->rtcp_sibling) {
@@ -2116,7 +2416,7 @@ int sdp_replace(struct sdp_chopper *chop, GQueue *sessions, struct call_monologu
 					chopper_append_c(chop, "a=inactive\r\n");
 			}
 
-			if (call_media->protocol && call_media->protocol->rtp) {
+			if (proto_is_rtp(call_media->protocol)) {
 				if (MEDIA_ISSET(call_media, RTCP_MUX)
 						&& (flags->opmode == OP_ANSWER
 							|| (flags->opmode == OP_OFFER
@@ -2181,7 +2481,7 @@ int sdp_is_duplicate(GQueue *sessions) {
 			return 0;
 		for (GList *ql = attr_list->head; ql; ql = ql->next) {
 			struct sdp_attribute *attr = ql->data;
-			if (!str_cmp_str(&attr->value, &instance_id))
+			if (!str_cmp_str(&attr->value, &rtpe_instance_id))
 				goto next;
 		}
 		return 0;
@@ -2192,5 +2492,5 @@ next:
 }
 
 void sdp_init() {
-	rand_hex_str(instance_id.s, instance_id.len / 2);
+	rand_hex_str(rtpe_instance_id.s, rtpe_instance_id.len / 2);
 }

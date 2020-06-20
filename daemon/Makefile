@@ -75,6 +75,7 @@ CFLAGS+=	$(shell pkg-config --cflags libavformat)
 CFLAGS+=	$(shell pkg-config --cflags libavutil)
 CFLAGS+=	$(shell pkg-config --cflags libswresample)
 CFLAGS+=	$(shell pkg-config --cflags libavfilter)
+CFLAGS+=	$(shell pkg-config --cflags spandsp)
 CFLAGS+=	-DWITH_TRANSCODING
 ifeq ($(have_bcg729),yes)
 CFLAGS+=	-DHAVE_BCG729
@@ -115,6 +116,7 @@ LDLIBS+=	$(shell pkg-config --libs libavformat)
 LDLIBS+=	$(shell pkg-config --libs libavutil)
 LDLIBS+=	$(shell pkg-config --libs libswresample)
 LDLIBS+=	$(shell pkg-config --libs libavfilter)
+LDLIBS+=	$(shell pkg-config --libs spandsp)
 ifeq ($(have_bcg729),yes)
 LDLIBS+=	$(bcg729_lib)
 endif
@@ -125,8 +127,8 @@ SRCS=		main.c kernel.c poller.c aux.c control_tcp.c call.c control_udp.c redis.c
 		bencode.c cookie_cache.c udp_listener.c control_ng.strhash.c sdp.strhash.c stun.c rtcp.c \
 		crypto.c rtp.c call_interfaces.strhash.c dtls.c log.c cli.c graphite.c ice.c \
 		media_socket.c homer.c recording.c statistics.c cdr.c ssrc.c iptables.c tcp_listener.c \
-		codec.c load.c dtmf.c timerthread.c media_player.c
-LIBSRCS=	loglib.c auxlib.c rtplib.c str.c socket.c streambuf.c ssllib.c
+		codec.c load.c dtmf.c timerthread.c media_player.c jitter_buffer.c t38.c
+LIBSRCS=	loglib.c auxlib.c rtplib.c str.c socket.c streambuf.c ssllib.c dtmflib.c
 ifeq ($(with_transcoding),yes)
 LIBSRCS+=	codeclib.c resample.c
 endif
@@ -136,5 +138,9 @@ PODS=		rtpengine.pod
 MANS=		$(PODS:.pod=.8)
 
 include ../lib/common.Makefile
+
+ifeq ($(with_transcoding),yes)
+.depend:	dtmf_rx_fillin.h
+endif
 
 include		.depend

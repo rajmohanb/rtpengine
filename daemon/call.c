@@ -45,13 +45,15 @@
 #include "graphite.h"
 #include "codec.h"
 #include "media_player.h"
+#include "jitter_buffer.h"
+#include "t38.h"
 
 
-/* also serves as array index for callstream->peers[] */
 struct iterator_helper {
 	GSList			*del_timeout;
 	GSList			*del_scheduled;
 	GHashTable		*addr_sfd;
+	uint64_t		transcoded_media;
 };
 struct xmlrpc_helper {
 	enum xmlrpc_format fmt;
@@ -69,7 +71,7 @@ GHashTable *rtpe_callhash;
 
 /* ********** */
 
-static void __monologue_destroy(struct call_monologue *monologue);
+static void __monologue_destroy(struct call_monologue *monologue, int recurse);
 static int monologue_destroy(struct call_monologue *ml);
 static struct timeval add_ongoing_calls_dur_in_interval(struct timeval *interval_start,
 		struct timeval *interval_duration);
@@ -205,6 +207,12 @@ next:
 		;
 	}
 
+	for (it = c->medias.head; it; it = it->next) {
+		struct call_media *media = it->data;
+		if (MEDIA_ISSET(media, TRANSCODE))
+			hlp->transcoded_media++;
+	}
+
 	if (good || IS_FOREIGN_CALL(c)) {
 		goto out;
 	}
@@ -290,8 +298,11 @@ retry:
 		sigprocmask(SIG_SETMASK, &ss, NULL);
 		closelog();
 
-		for (i = 0; i < 100; i++)
+		for (i = 0; i < 100; i++) {
+			if (i == 2 && rtpe_config.common.log_stderr)
+				continue;
 			close(i);
+		}
 
 		if (!rtpe_config.common.log_stderr) {
 			openlog("rtpengine/child", LOG_PID | LOG_NDELAY, LOG_DAEMON);
@@ -375,10 +386,15 @@ void kill_calls_timer(GSList *list, const char *url) {
 	}
 
 	while (list) {
+		GHashTable *dup_tags = NULL;
+
 		ca = list->data;
 		log_info_call(ca);
 		if (!url)
 			goto destroy;
+
+		if (rtpe_config.fmt == XF_KAMAILIO)
+			dup_tags = g_hash_table_new(str_hash, str_equal);
 
 		rwlock_lock_r(&ca->master_lock);
 
@@ -400,10 +416,10 @@ void kill_calls_timer(GSList *list, const char *url) {
 		case XF_SEMS:
 			for (csl = ca->monologues.head; csl; csl = csl->next) {
 				cm = csl->data;
-				if (cm->tag.s && cm->tag.len) {
-					g_queue_push_tail(&xh->strings, g_string_chunk_insert(xh->c, url_buf));
-					g_queue_push_tail(&xh->strings, str_chunk_insert(xh->c, &cm->tag));
-				}
+				if (!cm->tag.s || !cm->tag.len)
+					continue;
+				g_queue_push_tail(&xh->strings, g_string_chunk_insert(xh->c, url_buf));
+				g_queue_push_tail(&xh->strings, str_chunk_insert(xh->c, &cm->tag));
 			}
 			break;
 		case XF_CALLID:
@@ -414,16 +430,24 @@ void kill_calls_timer(GSList *list, const char *url) {
 			for (csl = ca->monologues.head; csl; csl = csl->next) {
 				cm = csl->data;
 				cd = cm->active_dialogue;
-				if (cm->tag.s && cm->tag.len && cd && cd->tag.s && cd->tag.len) {
-					g_queue_push_tail(&xh->strings,
-							g_string_chunk_insert(xh->c, url_buf));
-					g_queue_push_tail(&xh->strings,
-							str_chunk_insert(xh->c, &ca->callid));
-					g_queue_push_tail(&xh->strings,
-							str_chunk_insert(xh->c, &cm->tag));
-					g_queue_push_tail(&xh->strings,
-							str_chunk_insert(xh->c, &cd->tag));
-				}
+				if (!cm->tag.s || !cm->tag.len || !cd || !cd->tag.s || !cd->tag.len)
+					continue;
+
+				str *from_tag = g_hash_table_lookup(dup_tags, &cd->tag);
+				if (from_tag && !str_cmp_str(from_tag, &cm->tag))
+					continue;
+
+				from_tag = str_chunk_insert(xh->c, &cm->tag);
+				str *to_tag = str_chunk_insert(xh->c, &cd->tag);
+
+				g_queue_push_tail(&xh->strings,
+						g_string_chunk_insert(xh->c, url_buf));
+				g_queue_push_tail(&xh->strings,
+						str_chunk_insert(xh->c, &ca->callid));
+				g_queue_push_tail(&xh->strings, from_tag);
+				g_queue_push_tail(&xh->strings, to_tag);
+
+				g_hash_table_insert(dup_tags, from_tag, to_tag);
 			}
 			break;
 		}
@@ -435,6 +459,9 @@ destroy:
 		obj_put(ca);
 		list = g_slist_delete_link(list, list);
 		log_info_clear();
+
+		if (dup_tags)
+			g_hash_table_destroy(dup_tags);
 	}
 
 	if (xh)
@@ -444,14 +471,14 @@ destroy:
 
 
 #define DS(x) do {							\
-		u_int64_t ks_val, d;					\
-		ks_val = atomic64_get(&ps->kernel_stats.x);	\
+		u_int64_t ks_val;					\
+		ks_val = atomic64_get(&ps->kernel_stats.x);		\
 		if (ke->stats.x < ks_val)				\
-			d = 0;						\
+			diff_ ## x = 0;					\
 		else							\
-			d = ke->stats.x - ks_val;			\
-		atomic64_add(&ps->stats.x, d);			\
-		atomic64_add(&rtpe_statsps.x, d);			\
+			diff_ ## x = ke->stats.x - ks_val;		\
+		atomic64_add(&ps->stats.x, diff_ ## x);			\
+		atomic64_add(&rtpe_statsps.x, diff_ ## x);		\
 	} while (0)
 
 static void update_requests_per_second_stats(struct requests_ps *request, u_int64_t new_val) {
@@ -544,6 +571,9 @@ static void call_timer(void *ptr) {
 	deletes = atomic64_get_set(&rtpe_statsps.deletes, 0);
 	update_requests_per_second_stats(&rtpe_totalstats_interval.deletes_ps,	deletes / run_diff);
 
+	// stats derived while iterating calls
+	atomic64_set(&rtpe_stats.transcoded_media, hlp.transcoded_media);
+
 	i = kernel_list();
 	while (i) {
 		ke = i->data;
@@ -560,6 +590,8 @@ static void call_timer(void *ptr) {
 			rwlock_unlock_r(&sfd->call->master_lock);
 			goto next;
 		}
+
+		uint64_t diff_packets, diff_bytes, diff_errors;
 
 		DS(packets);
 		DS(bytes);
@@ -601,28 +633,34 @@ static void call_timer(void *ptr) {
 
 		sink = packet_stream_sink(ps);
 
-		/* XXX this only works if the kernel module actually gets to see the packets. */
-		if (sink) {
-			mutex_lock(&sink->out_lock);
-			if (sink->crypto.params.crypto_suite && sink->ssrc_out
-					&& ntohl(ke->target.ssrc) == sink->ssrc_out->parent->h.ssrc
-					&& ke->target.encrypt.last_index - sink->ssrc_out->srtp_index > 0x4000)
-			{
-				sink->ssrc_out->srtp_index = ke->target.encrypt.last_index;
-				update = 1;
+		if (!ke->target.non_forwarding && diff_packets) {
+			if (sink) {
+				mutex_lock(&sink->out_lock);
+				if (sink->crypto.params.crypto_suite && sink->ssrc_out
+						&& ntohl(ke->target.ssrc) == sink->ssrc_out->parent->h.ssrc
+						&& ke->target.encrypt.last_index - sink->ssrc_out->srtp_index > 0x4000)
+				{
+					sink->ssrc_out->srtp_index = ke->target.encrypt.last_index;
+					update = 1;
+				}
+				mutex_unlock(&sink->out_lock);
 			}
-			mutex_unlock(&sink->out_lock);
-		}
 
-		mutex_lock(&ps->in_lock);
-		if (sfd->crypto.params.crypto_suite && ps->ssrc_in
-				&& ntohl(ke->target.ssrc) == ps->ssrc_in->parent->h.ssrc
-				&& ke->target.decrypt.last_index - ps->ssrc_in->srtp_index > 0x4000)
-		{
-			ps->ssrc_in->srtp_index = ke->target.decrypt.last_index;
-			update = 1;
+			mutex_lock(&ps->in_lock);
+
+			if (ps->ssrc_in && ntohl(ke->target.ssrc) == ps->ssrc_in->parent->h.ssrc) {
+				atomic64_add(&ps->ssrc_in->octets, diff_bytes);
+				atomic64_add(&ps->ssrc_in->packets, diff_packets);
+				atomic64_set(&ps->ssrc_in->last_seq, ke->target.decrypt.last_index);
+				ps->ssrc_in->srtp_index = ke->target.decrypt.last_index;
+
+				if (sfd->crypto.params.crypto_suite
+						&& ke->target.decrypt.last_index
+						- ps->ssrc_in->srtp_index > 0x4000)
+					update = 1;
+			}
+			mutex_unlock(&ps->in_lock);
 		}
-		mutex_unlock(&ps->in_lock);
 
 		rwlock_unlock_r(&sfd->call->master_lock);
 
@@ -689,8 +727,8 @@ struct call_media *call_media_new(struct call *call) {
 	med->call = call;
 	med->codecs_recv = g_hash_table_new_full(g_int_hash, g_int_equal, NULL, NULL);
 	med->codecs_send = g_hash_table_new_full(g_int_hash, g_int_equal, NULL, NULL);
-	med->codec_names_recv = g_hash_table_new_full(str_hash, str_equal, NULL, (void (*)(void*)) g_queue_free);
-	med->codec_names_send = g_hash_table_new_full(str_hash, str_equal, NULL, (void (*)(void*)) g_queue_free);
+	med->codec_names_recv = g_hash_table_new_full(str_case_hash, str_case_equal, NULL, (void (*)(void*)) g_queue_free);
+	med->codec_names_send = g_hash_table_new_full(str_case_hash, str_case_equal, NULL, (void (*)(void*)) g_queue_free);
 	return med;
 }
 
@@ -902,6 +940,9 @@ struct packet_stream *__packet_stream_new(struct call *call) {
 	recording_init_stream(stream);
 	stream->send_timer = send_timer_new(stream);
 
+	if (rtpe_config.jb_length)
+		stream->jb = jitter_buffer_new(call);
+
 	return stream;
 }
 
@@ -996,10 +1037,17 @@ void call_media_state_machine(struct call_media *m) {
 static int __init_stream(struct packet_stream *ps) {
 	struct call_media *media = ps->media;
 	struct call *call = ps->call;
-	int active = -1;
+	int dtls_active = -1;
 	AUTO_CLEANUP_BUF(paramsbuf);
+	struct dtls_connection *dtls_conn = NULL;
 
-	if (MEDIA_ISSET(media, SDES)) {
+	if (MEDIA_ISSET(media, DTLS)) {
+		dtls_conn = dtls_ptr(ps->selected_sfd);
+		if (dtls_conn)
+			dtls_active = dtls_is_active(dtls_conn);
+	}
+
+	if (MEDIA_ISSET(media, SDES) && dtls_active == -1) {
 		for (GList *l = ps->sfds.head; l; l = l->next) {
 			struct stream_fd *sfd = l->data;
 			struct crypto_params_sdes *cps = media->sdes_in.head
@@ -1018,19 +1066,16 @@ static int __init_stream(struct packet_stream *ps) {
 	}
 
 	if (MEDIA_ISSET(media, DTLS) && !PS_ISSET(ps, FALLBACK_RTCP)) {
-		struct dtls_connection *d = dtls_ptr(ps->selected_sfd);
-		if (d)
-			active = dtls_is_active(d);
 		// we try to retain our role if possible, but must handle a role switch
-		if ((active && !MEDIA_ISSET(media, SETUP_ACTIVE))
-				|| (!active && !MEDIA_ISSET(media, SETUP_PASSIVE)))
-			active = -1;
-		if (active == -1)
-			active = (PS_ISSET(ps, FILLED) && MEDIA_ISSET(media, SETUP_ACTIVE));
-		dtls_connection_init(&ps->ice_dtls, ps, active, call->dtls_cert);
+		if ((dtls_active && !MEDIA_ISSET(media, SETUP_ACTIVE))
+				|| (!dtls_active && !MEDIA_ISSET(media, SETUP_PASSIVE)))
+			dtls_active = -1;
+		if (dtls_active == -1)
+			dtls_active = (PS_ISSET(ps, FILLED) && MEDIA_ISSET(media, SETUP_ACTIVE));
+		dtls_connection_init(&ps->ice_dtls, ps, dtls_active, call->dtls_cert);
 		for (GList *l = ps->sfds.head; l; l = l->next) {
 			struct stream_fd *sfd = l->data;
-			dtls_connection_init(&sfd->dtls, ps, active, call->dtls_cert);
+			dtls_connection_init(&sfd->dtls, ps, dtls_active, call->dtls_cert);
 		}
 
 		if (!PS_ISSET(ps, FINGERPRINT_VERIFIED) && media->fingerprint.hash_func
@@ -1282,7 +1327,7 @@ static void __generate_crypto(const struct sdp_ng_flags *flags, struct call_medi
 			MEDIA_CLEAR(this, SETUP_PASSIVE);
 	}
 
-	if (!MEDIA_ISSET(this, INITIALIZED)) {
+	if (!MEDIA_ARESET2(this, DTLS, SDES) && flags->opmode == OP_OFFER) {
 		/* we offer both DTLS and SDES by default */
 		/* unless this is overridden by flags */
 		if (!flags->dtls_off)
@@ -1309,60 +1354,84 @@ static void __generate_crypto(const struct sdp_ng_flags *flags, struct call_medi
 	/* SDES parameters below */
 
 	if (flags->opmode == OP_OFFER) {
-		if (!cpq->head) {
-			// generate a new set of params
-			// if we were offered some crypto suites, copy those first into our offer
-			unsigned int c_tag = 1; // tag for next crypto suite generated by us
-			unsigned long types_offered = 0;
+		// generate full set of params
+		// re-create the entire list - steal for later flushing
+		GQueue cpq_orig = *cpq;
+		g_queue_init(cpq);
 
-			// make sure our bit field is large enough
-			assert(num_crypto_suites <= sizeof(types_offered) * 8);
+		// if we were offered some crypto suites, copy those first into our offer
+		unsigned int c_tag = 1; // tag for next crypto suite generated by us
+		unsigned long types_offered = 0;
 
-			for (GList *l = offered_cpq->head; l; l = l->next) {
-				struct crypto_params_sdes *offered_cps = l->data;
+		// make sure our bit field is large enough
+		assert(num_crypto_suites <= sizeof(types_offered) * 8);
 
-				struct crypto_params_sdes *cps = g_slice_alloc0(sizeof(*cps));
-				g_queue_push_tail(cpq, cps);
+		for (GList *l = offered_cpq->head; l; l = l->next) {
+			struct crypto_params_sdes *offered_cps = l->data;
 
-				cps->tag = offered_cps->tag;
-				// our own offered tags will be higher than the ones we received
-				if (cps->tag >= c_tag)
-					c_tag = cps->tag + 1;
-				crypto_params_copy(&cps->params, &offered_cps->params, 1);
+			struct crypto_params_sdes *cps = g_slice_alloc0(sizeof(*cps));
+			g_queue_push_tail(cpq, cps);
 
-				// we use a bit field to keep track of which types we've seen here
-				types_offered |= 1 << cps->params.crypto_suite->idx;
+			cps->tag = offered_cps->tag;
+			// our own offered tags will be higher than the ones we received
+			if (cps->tag >= c_tag)
+				c_tag = cps->tag + 1;
+			crypto_params_copy(&cps->params, &offered_cps->params, 1);
 
-				__sdes_flags(cps, flags);
+			// we use a bit field to keep track of which types we've seen here
+			types_offered |= 1 << cps->params.crypto_suite->idx;
+
+			__sdes_flags(cps, flags);
+		}
+
+		// if we had any suites added before, re-add those that aren't there yet
+		struct crypto_params_sdes *cps_orig;
+		while ((cps_orig = g_queue_pop_head(&cpq_orig))) {
+			if ((types_offered & (1 << cps_orig->params.crypto_suite->idx))) {
+				crypto_params_sdes_free(cps_orig);
+				continue;
 			}
 
-			// generate crypto suite offers for any types that we haven't seen above
-			for (unsigned int i = 0; i < num_crypto_suites; i++) {
-				if ((types_offered & (1 << i)))
-					continue;
+			// make sure our tag is higher than what we've seen
+			if (cps_orig->tag < c_tag)
+				cps_orig->tag = c_tag;
+			if (cps_orig->tag >= c_tag)
+				c_tag = cps_orig->tag + 1;
 
-				if (flags->sdes_no && g_hash_table_lookup(flags->sdes_no,
-							&crypto_suites[i].name_str))
-				{
-					ilog(LOG_DEBUG, "Not offering crypto suite '%s' "
-							"due to 'SDES-no' option",
-							crypto_suites[i].name);
-					continue;
-				}
+			g_queue_push_tail(cpq, cps_orig);
 
-				struct crypto_params_sdes *cps = g_slice_alloc0(sizeof(*cps));
-				g_queue_push_tail(cpq, cps);
+			types_offered |= 1 << cps_orig->params.crypto_suite->idx;
+		}
 
-				cps->tag = c_tag++;
-				cps->params.crypto_suite = &crypto_suites[i];
-				random_string((unsigned char *) cps->params.master_key,
-						cps->params.crypto_suite->master_key_len);
-				random_string((unsigned char *) cps->params.master_salt,
-						cps->params.crypto_suite->master_salt_len);
-				/* mki = mki_len = 0 */
+		// generate crypto suite offers for any types that we haven't seen above
+		// XXX for re-invites, this always creates new crypto keys for suites
+		// that weren't accepted before, instead of re-using the same keys (and
+		// suites) that were previously offered but not accepted
+		for (unsigned int i = 0; i < num_crypto_suites; i++) {
+			if ((types_offered & (1 << i)))
+				continue;
 
-				__sdes_flags(cps, flags);
+			if (flags->sdes_no && g_hash_table_lookup(flags->sdes_no,
+						&crypto_suites[i].name_str))
+			{
+				ilog(LOG_DEBUG, "Not offering crypto suite '%s' "
+						"due to 'SDES-no' option",
+						crypto_suites[i].name);
+				continue;
 			}
+
+			struct crypto_params_sdes *cps = g_slice_alloc0(sizeof(*cps));
+			g_queue_push_tail(cpq, cps);
+
+			cps->tag = c_tag++;
+			cps->params.crypto_suite = &crypto_suites[i];
+			random_string((unsigned char *) cps->params.master_key,
+					cps->params.crypto_suite->master_key_len);
+			random_string((unsigned char *) cps->params.master_salt,
+					cps->params.crypto_suite->master_salt_len);
+			/* mki = mki_len = 0 */
+
+			__sdes_flags(cps, flags);
 		}
 	}
 	else { // OP_ANSWER
@@ -1371,11 +1440,15 @@ static void __generate_crypto(const struct sdp_ng_flags *flags, struct call_medi
 		struct crypto_params_sdes *cps_in = cpq_in->head ? cpq_in->head->data : NULL;
 		struct crypto_params_sdes *offered_cps = offered_cpq->head ? offered_cpq->head->data : NULL;
 		if (offered_cps) {
+			ilog(LOG_DEBUG, "Looking for matching crypto suite to offered %u:%s", offered_cps->tag,
+					offered_cps->params.crypto_suite->name);
 			// check if we can do SRTP<>SRTP passthrough. the crypto suite that was accepted
 			// must have been present in what was offered to us
 			for (GList *l = cpq_in->head; l; l = l->next) {
 				struct crypto_params_sdes *check_cps = l->data;
 				if (check_cps->params.crypto_suite == offered_cps->params.crypto_suite) {
+					ilog(LOG_DEBUG, "Found matching crypto suite %u:%s", check_cps->tag,
+							check_cps->params.crypto_suite->name);
 					cps_in = check_cps;
 					break;
 				}
@@ -1392,6 +1465,8 @@ static void __generate_crypto(const struct sdp_ng_flags *flags, struct call_medi
 				// SRTP<>SRTP passthrough
 				cps->params.session_params = cps_in->params.session_params; // XXX verify
 				crypto_params_copy(&cps->params, &offered_cps->params, 1);
+				ilog(LOG_DEBUG, "Copied crypto params from %i:%s for SRTP passthrough",
+						cps_in->tag, cps_in->params.crypto_suite->name);
 			}
 			else {
 				random_string((unsigned char *) cps->params.master_key,
@@ -1400,7 +1475,20 @@ static void __generate_crypto(const struct sdp_ng_flags *flags, struct call_medi
 						cps->params.crypto_suite->master_salt_len);
 				/* mki = mki_len = 0 */
 				cps->params.session_params = cps_in->params.session_params;
+				ilog(LOG_DEBUG, "Creating new SRTP crypto params for %i:%s",
+						cps->tag, cps->params.crypto_suite->name);
 			}
+
+			// flush out crypto suites we ended up not using - leave only one
+#if GLIB_CHECK_VERSION(2,30,0)
+			if (!g_queue_remove(cpq_in, cps_in))
+				ilog(LOG_ERR, "BUG: incoming crypto suite not found in queue");
+#else
+			g_queue_remove(cpq_in, cps_in);
+#endif
+			crypto_params_sdes_queue_clear(cpq_in);
+			g_queue_push_tail(cpq_in, cps_in);
+
 			__sdes_flags(cps, flags);
 			__sdes_flags(cps_in, flags);
 		}
@@ -1438,7 +1526,7 @@ static void __sdes_accept(struct call_media *media, const struct sdp_ng_flags *f
 			crypto_params_sdes_free(offered_cps);
 			l = next;
 		}
-}
+	}
 
 	struct crypto_params_sdes *cps_in = media->sdes_in.head->data;
 	GList *l = media->sdes_out.head;
@@ -1484,7 +1572,7 @@ static void __rtcp_mux_logic(const struct sdp_ng_flags *flags, struct call_media
 	if (flags->opmode == OP_ANSWER) {
 		/* default is to go with the client's choice, unless we were instructed not
 		 * to do that in the offer (see below) */
-		if (!MEDIA_ISSET(media, RTCP_MUX_OVERRIDE))
+		if (!MEDIA_ISSET(other_media, RTCP_MUX_OVERRIDE))
 			bf_copy_same(&media->media_flags, &other_media->media_flags, MEDIA_FLAG_RTCP_MUX);
 
 		return;
@@ -1507,14 +1595,14 @@ static void __rtcp_mux_logic(const struct sdp_ng_flags *flags, struct call_media
 	/* we can also control what's going to happen in the answer. it
 	 * depends on what was offered, but by default we go with the other
 	 * client's choice */
-	MEDIA_CLEAR(other_media, RTCP_MUX_OVERRIDE);
+	MEDIA_CLEAR(media, RTCP_MUX_OVERRIDE);
 	if (MEDIA_ISSET(other_media, RTCP_MUX)) {
 		if (!MEDIA_ISSET(media, RTCP_MUX)) {
 			/* rtcp-mux was offered, but we don't offer it ourselves.
 			 * the answer will not accept rtcp-mux (wasn't offered).
 			 * the default is to accept the offer, unless we want to
 			 * explicitly reject it. */
-			MEDIA_SET(other_media, RTCP_MUX_OVERRIDE);
+			MEDIA_SET(media, RTCP_MUX_OVERRIDE);
 			if (flags->rtcp_mux_reject)
 				MEDIA_CLEAR(other_media, RTCP_MUX);
 		}
@@ -1524,9 +1612,9 @@ static void __rtcp_mux_logic(const struct sdp_ng_flags *flags, struct call_media
 			 * either explicitly accept it (possibly demux) or reject
 			 * it (possible reverse demux). */
 			if (flags->rtcp_mux_accept)
-				MEDIA_SET(other_media, RTCP_MUX_OVERRIDE);
+				MEDIA_SET(media, RTCP_MUX_OVERRIDE);
 			else if (flags->rtcp_mux_reject) {
-				MEDIA_SET(other_media, RTCP_MUX_OVERRIDE);
+				MEDIA_SET(media, RTCP_MUX_OVERRIDE);
 				MEDIA_CLEAR(other_media, RTCP_MUX);
 			}
 		}
@@ -1534,7 +1622,7 @@ static void __rtcp_mux_logic(const struct sdp_ng_flags *flags, struct call_media
 	else {
 		/* rtcp-mux was not offered. we may offer it, but since it wasn't
 		 * offered to us, we must not accept it. */
-		MEDIA_SET(other_media, RTCP_MUX_OVERRIDE);
+		MEDIA_SET(media, RTCP_MUX_OVERRIDE);
 	}
 }
 
@@ -1771,9 +1859,107 @@ static void __update_media_id(struct call_media *media, struct call_media *other
 	}
 }
 
+static void __t38_reset(struct call_media *media, struct call_media *other_media) {
+	ilog(LOG_DEBUG, "Stopping T.38 gateway and resetting %s/" STR_FORMAT " to %s/" STR_FORMAT,
+			media->protocol->name,
+			STR_FMT(&media->format_str),
+			other_media->protocol->name,
+			STR_FMT(&other_media->format_str));
+
+	media->protocol = other_media->protocol;
+	media->type_id = other_media->type_id;
+	call_str_cpy(media->call, &media->type, &other_media->type);
+	call_str_cpy(media->call, &media->format_str, &other_media->format_str);
+}
+
+static void __update_media_protocol(struct call_media *media, struct call_media *other_media,
+		struct stream_params *sp, struct sdp_ng_flags *flags)
+{
+	// is the media type still the same?
+	if (str_cmp_str(&other_media->type, &sp->type)) {
+		ilog(LOG_DEBUG, "Updating media type from '" STR_FORMAT "' to '" STR_FORMAT "'",
+				STR_FMT(&other_media->type), STR_FMT(&sp->type));
+		call_str_cpy(other_media->call, &other_media->type, &sp->type);
+		other_media->type_id = codec_get_type(&other_media->type);
+		call_str_cpy(media->call, &media->type, &sp->type);
+		media->type_id = other_media->type_id;
+	}
+
+	/* deduct protocol from stream parameters received */
+	if (other_media->protocol != sp->protocol) {
+		other_media->protocol = sp->protocol;
+		/* if the endpoint changes the protocol, we reset the other side's
+		 * protocol as well. this lets us remember our previous overrides,
+		 * but also lets endpoints re-negotiate.
+		 * Exception: OSRTP answer/accept. */
+		if (flags && flags->opmode == OP_ANSWER && other_media->protocol && other_media->protocol->rtp
+				&& !other_media->protocol->srtp
+				&& media->protocol && media->protocol->osrtp && flags->osrtp_accept)
+			;
+		else
+			media->protocol = NULL;
+	}
+	/* default is to leave the protocol unchanged */
+	if (!media->protocol)
+		media->protocol = other_media->protocol;
+
+	// handler overrides requested by the user
+	if (!flags)
+		return;
+
+	/* allow override of outgoing protocol even if we know it already */
+	/* but only if this is an RTP-based protocol */
+	if (flags->transport_protocol
+			&& proto_is_rtp(other_media->protocol))
+		media->protocol = flags->transport_protocol;
+
+	// OSRTP offer requested?
+	if (media->protocol && media->protocol->rtp && !media->protocol->srtp
+			&& media->protocol->osrtp_proto && flags->osrtp_offer && flags->opmode == OP_OFFER)
+	{
+		media->protocol = &transport_protocols[media->protocol->osrtp_proto];
+	}
+
+	// T.38 decoder?
+	if (other_media->type_id == MT_IMAGE && proto_is(other_media->protocol, PROTO_UDPTL)
+			&& flags->t38_decode)
+	{
+		media->protocol = flags->transport_protocol;
+		if (!media->protocol)
+			media->protocol = &transport_protocols[PROTO_RTP_AVP];
+		media->type_id = MT_AUDIO;
+		call_str_cpy_c(media->call, &media->type, "audio");
+		return;
+	}
+
+	// T.38 encoder?
+	if (other_media->type_id == MT_AUDIO && proto_is_rtp(other_media->protocol)
+			&& flags->t38_force)
+	{
+		media->protocol = &transport_protocols[PROTO_UDPTL];
+		media->type_id = MT_IMAGE;
+		call_str_cpy_c(media->call, &media->type, "image");
+		call_str_cpy_c(media->call, &media->format_str, "t38");
+		return;
+	}
+
+	// previous T.38 gateway but now stopping?
+	if (flags->t38_stop) {
+		if (other_media->type_id == MT_AUDIO && proto_is_rtp(other_media->protocol)
+				&& media->type_id == MT_IMAGE
+				&& proto_is(media->protocol, PROTO_UDPTL))
+			__t38_reset(media, other_media);
+		else if (media->type_id == MT_AUDIO && proto_is_rtp(media->protocol)
+				&& other_media->type_id == MT_IMAGE
+				&& proto_is(other_media->protocol, PROTO_UDPTL))
+			__t38_reset(media, other_media);
+		// drop through for protocol override
+	}
+}
+
 /* called with call->master_lock held in W */
 int monologue_offer_answer(struct call_monologue *other_ml, GQueue *streams,
-		const struct sdp_ng_flags *flags)
+		struct sdp_ng_flags *flags)
 {
 	struct stream_params *sp;
 	GList *media_iter, *ml_media, *other_ml_media;
@@ -1838,23 +2024,7 @@ int monologue_offer_answer(struct call_monologue *other_ml, GQueue *streams,
 				ice_restart(other_media->ice_agent);
 		}
 
-		/* deduct protocol from stream parameters received */
-		if (other_media->protocol != sp->protocol) {
-			other_media->protocol = sp->protocol;
-			/* if the endpoint changes the protocol, we reset the other side's
-			 * protocol as well. this lets us remember our previous overrides,
-			 * but also lets endpoints re-negotiate. */
-			media->protocol = NULL;
-		}
-		/* default is to leave the protocol unchanged */
-		if (!media->protocol)
-			media->protocol = other_media->protocol;
-		/* allow override of outgoing protocol even if we know it already */
-		/* but only if this is an RTP-based protocol */
-		if (flags && flags->transport_protocol
-				&& other_media->protocol && other_media->protocol->rtp)
-			media->protocol = flags->transport_protocol;
-
+		__update_media_protocol(media, other_media, sp, flags);
 		__update_media_id(media, other_media, sp, flags);
 		__endpoint_loop_protect(sp, other_media);
 
@@ -1862,7 +2032,8 @@ int monologue_offer_answer(struct call_monologue *other_ml, GQueue *streams,
 			/* copy parameters advertised by the sender of this message */
 			bf_copy_same(&other_media->media_flags, &sp->sp_flags,
 					SHARED_FLAG_RTCP_MUX | SHARED_FLAG_ASYMMETRIC | SHARED_FLAG_UNIDIRECTIONAL |
-					SHARED_FLAG_ICE | SHARED_FLAG_TRICKLE_ICE | SHARED_FLAG_ICE_LITE);
+					SHARED_FLAG_ICE | SHARED_FLAG_TRICKLE_ICE | SHARED_FLAG_ICE_LITE |
+					SHARED_FLAG_RTCP_FB);
 
 			// steal the entire queue of offered crypto params
 			crypto_params_sdes_queue_clear(&other_media->sdes_in);
@@ -1892,14 +2063,29 @@ int monologue_offer_answer(struct call_monologue *other_ml, GQueue *streams,
 			MEDIA_SET(media, PTIME_OVERRIDE);
 			MEDIA_SET(other_media, PTIME_OVERRIDE);
 		}
+		if (str_cmp_str(&other_media->format_str, &sp->format_str))
+			call_str_cpy(call, &other_media->format_str, &sp->format_str);
+		if (str_cmp_str(&media->format_str, &sp->format_str)) {
+			// update opposite side format string only if protocols match
+			if (media->protocol == other_media->protocol)
+				call_str_cpy(call, &media->format_str, &sp->format_str);
+		}
 		codec_rtp_payload_types(media, other_media, &sp->rtp_payload_types, flags);
-		codec_handlers_update(media, other_media, flags);
+		codec_handlers_update(media, other_media, flags, sp);
 
 		/* send and recv are from our POV */
 		bf_copy_same(&media->media_flags, &sp->sp_flags,
 				SP_FLAG_SEND | SP_FLAG_RECV);
 		bf_copy(&other_media->media_flags, MEDIA_FLAG_RECV, &sp->sp_flags, SP_FLAG_SEND);
 		bf_copy(&other_media->media_flags, MEDIA_FLAG_SEND, &sp->sp_flags, SP_FLAG_RECV);
+
+		/* deduct address family from stream parameters received */
+		other_media->desired_family = sp->rtp_endpoint.address.family;
+		/* for outgoing SDP, use "direction"/DF or default to what was offered */
+		if (!media->desired_family)
+			media->desired_family = other_media->desired_family;
+		if (sp->desired_family)
+			media->desired_family = sp->desired_family;
 
 		if (sp->rtp_endpoint.port) {
 			/* DTLS stuff */
@@ -1911,13 +2097,6 @@ int monologue_offer_answer(struct call_monologue *other_ml, GQueue *streams,
 			/* SDES and DTLS */
 			__generate_crypto(flags, media, other_media);
 
-			/* deduct address family from stream parameters received */
-			other_media->desired_family = sp->rtp_endpoint.address.family;
-			/* for outgoing SDP, use "direction"/DF or default to what was offered */
-			if (!media->desired_family)
-				media->desired_family = other_media->desired_family;
-			if (sp->desired_family)
-				media->desired_family = sp->desired_family;
 		}
 
 		/* determine number of consecutive ports needed locally.
@@ -1991,6 +2170,7 @@ init:
 		ice_update(media->ice_agent, NULL); /* this is in case rtcp-mux has changed */
 
 		recording_setup_media(media);
+		t38_gateway_start(media->t38_gateway);
 	}
 
 	return 0;
@@ -2130,7 +2310,7 @@ int forked_monologue_offer_answer(struct call_monologue *other_ml, GQueue *strea
 			MEDIA_SET(other_media, PTIME_OVERRIDE);
 		}
 		codec_rtp_payload_types(media, other_media, &sp->rtp_payload_types, flags);
-		codec_handlers_update(media, other_media, flags);
+		codec_handlers_update(media, other_media, flags, sp);
 
 		/* send and recv are from our POV */
 		bf_copy_same(&media->media_flags, &sp->sp_flags,
@@ -2360,10 +2540,14 @@ void call_destroy(struct call *c) {
 	if (!IS_OWN_CALL(c))
 		goto no_stats_output;
 
+	///// stats output
+
 	ilog(LOG_INFO, "Final packet stats:");
 
 	for (l = c->monologues.head; l; l = l->next) {
 		ml = l->data;
+
+		// stats output only - no cleanups
 
 		ilog(LOG_INFO, "--- Tag '" STR_FORMAT_M "'%s"STR_FORMAT"%s, created "
 				"%u:%02u ago for branch '" STR_FORMAT_M "', in dialogue with '" STR_FORMAT_M "'",
@@ -2382,20 +2566,31 @@ void call_destroy(struct call *c) {
 		for (k = ml->medias.head; k; k = k->next) {
 			md = k->data;
 
-			rtp_pt = __rtp_stats_codec(md);
+			// stats output only - no cleanups
+
 #define MLL_PREFIX "------ Media #%u ("STR_FORMAT" over %s) using " /* media log line prefix */
 #define MLL_COMMON /* common args */						\
 				md->index,				\
 				STR_FMT(&md->type),			\
 				md->protocol ? md->protocol->name : "(unknown)"
-			if (!rtp_pt)
-				ilog(LOG_INFO, MLL_PREFIX "unknown codec", MLL_COMMON);
-			else
+
+			if (proto_is_rtp(md->protocol)) {
+				rtp_pt = __rtp_stats_codec(md);
+				if (!rtp_pt)
+					ilog(LOG_INFO, MLL_PREFIX "unknown codec", MLL_COMMON);
+				else
+					ilog(LOG_INFO, MLL_PREFIX STR_FORMAT, MLL_COMMON,
+							STR_FMT(&rtp_pt->encoding_with_params));
+			}
+			else {
 				ilog(LOG_INFO, MLL_PREFIX STR_FORMAT, MLL_COMMON,
-						STR_FMT(&rtp_pt->encoding_with_params));
+						STR_FMT(&md->format_str));
+			}
 
 			for (o = md->streams.head; o; o = o->next) {
 				ps = o->data;
+
+				// stats output only - no cleanups
 
 				if (PS_ISSET(ps, FALLBACK_RTCP))
 					continue;
@@ -2416,20 +2611,15 @@ void call_destroy(struct call *c) {
 						rtpe_now.tv_sec - atomic64_get(&ps->last_packet));
 
 				statistics_update_totals(ps);
-				send_timer_put(&ps->send_timer);
-
 			}
-
-			ice_shutdown(&md->ice_agent);
 		}
-
-		media_player_stop(ml->player);
-		media_player_put(&ml->player);
 	}
 
 	k = g_hash_table_get_values(c->ssrc_hash->ht);
 	for (l = k; l; l = l->next) {
 		struct ssrc_entry_call *se = l->data;
+
+		// stats output only - no cleanups
 
 		if (!se->stats_blocks.length || !se->lowest_mos || !se->highest_mos)
 			continue;
@@ -2452,6 +2642,8 @@ void call_destroy(struct call *c) {
 	g_list_free(k);
 
 no_stats_output:
+	// cleanups
+
 	statistics_update_oneway(c);
 
 	cdr_update_entry(c);
@@ -2459,6 +2651,8 @@ no_stats_output:
 	for (l = c->streams.head; l; l = l->next) {
 		ps = l->data;
 
+		send_timer_put(&ps->send_timer);
+		jb_put(&ps->jb);
 		__unkernelize(ps);
 		dtls_shutdown(ps);
 		ps->selected_sfd = NULL;
@@ -2467,6 +2661,19 @@ no_stats_output:
 
 		ps->rtp_sink = NULL;
 		ps->rtcp_sink = NULL;
+	}
+
+	for (l = c->medias.head; l; l = l->next) {
+		md = l->data;
+		ice_shutdown(&md->ice_agent);
+		t38_gateway_stop(md->t38_gateway);
+		t38_gateway_put(&md->t38_gateway);
+	}
+
+	for (l = c->monologues.head; l; l = l->next) {
+		ml = l->data;
+		media_player_stop(ml->player);
+		media_player_put(&ml->player);
 	}
 
 	while (c->stream_fds.head) {
@@ -2521,7 +2728,7 @@ static void __call_free(void *p) {
 	struct packet_stream *ps;
 	struct endpoint_map *em;
 
-	__C_DBG("freeing call struct");
+	ilog(LOG_DEBUG, "freeing main call struct");
 
 	obj_put(c->dtls_cert);
 
@@ -2548,6 +2755,9 @@ static void __call_free(void *p) {
 		g_queue_clear_full(&md->codecs_prefs_recv, (GDestroyNotify) payload_type_free);
 		g_queue_clear_full(&md->codecs_prefs_send, (GDestroyNotify) payload_type_free);
 		codec_handlers_free(md);
+		codec_handler_free(&md->t38_handler);
+		t38_gateway_put(&md->t38_gateway);
+		g_queue_clear_full(&md->sdp_attributes, free);
 		g_slice_free1(sizeof(*md), md);
 	}
 
@@ -2568,10 +2778,8 @@ static void __call_free(void *p) {
 		crypto_cleanup(&ps->crypto);
 		g_queue_clear(&ps->sfds);
 		g_hash_table_destroy(ps->rtp_stats);
-		if (ps->ssrc_in)
-			obj_put(&ps->ssrc_in->parent->h);
-		if (ps->ssrc_out)
-			obj_put(&ps->ssrc_out->parent->h);
+		ssrc_ctx_put(&ps->ssrc_in);
+		ssrc_ctx_put(&ps->ssrc_out);
 		g_slice_free1(sizeof(*ps), ps);
 	}
 
@@ -2689,6 +2897,8 @@ void __monologue_tag(struct call_monologue *ml, const str *tag) {
 	struct call *call = ml->call;
 
 	__C_DBG("tagging monologue with '"STR_FORMAT"'", STR_FMT(tag));
+	if (ml->tag.s)
+		g_hash_table_remove(call->tags, &ml->tag);
 	call_str_cpy(call, &ml->tag, tag);
 	g_hash_table_insert(call->tags, &ml->tag, ml);
 }
@@ -2746,23 +2956,28 @@ void call_media_unkernelize(struct call_media *media) {
 }
 
 /* must be called with call->master_lock held in W */
-static void __monologue_destroy(struct call_monologue *monologue) {
+static void __monologue_destroy(struct call_monologue *monologue, int recurse) {
 	struct call *call;
 	struct call_monologue *dialogue;
-	GList *l;
 
 	call = monologue->call;
 
 	g_hash_table_remove(call->tags, &monologue->tag);
+	if (monologue->viabranch.s)
+		g_hash_table_remove(call->viabranches, &monologue->viabranch);
 
-	l = g_hash_table_get_values(monologue->other_tags);
-
-	while (l) {
+	for (GList *l = call->monologues.head; l; l = l->next) {
 		dialogue = l->data;
-		l = g_list_delete_link(l, l);
+
+		if (dialogue == monologue)
+			continue;
+		if (dialogue->active_dialogue != monologue
+				&& !g_hash_table_lookup(dialogue->other_tags, &monologue->tag))
+			continue;
+
 		g_hash_table_remove(dialogue->other_tags, &monologue->tag);
-		if (!g_hash_table_size(dialogue->other_tags))
-			__monologue_destroy(dialogue);
+		if (recurse && !g_hash_table_size(dialogue->other_tags))
+			__monologue_destroy(dialogue, 0);
 	}
 
 	monologue->deleted = 0;
@@ -2772,9 +2987,9 @@ static void __monologue_destroy(struct call_monologue *monologue) {
 static int monologue_destroy(struct call_monologue *ml) {
 	struct call *c = ml->call;
 
-	__monologue_destroy(ml);
+	__monologue_destroy(ml, 1);
 
-	if (!g_hash_table_size(c->tags)) {
+	if (g_hash_table_size(c->tags) < 2 && g_hash_table_size(c->viabranches) == 0) {
 		ilog(LOG_INFO, "Call branch '" STR_FORMAT_M "' (%s" STR_FORMAT "%svia-branch '" STR_FORMAT_M "') "
 				"deleted, no more branches remaining",
 				STR_FMT_M(&ml->tag),
@@ -2907,7 +3122,7 @@ static struct call_monologue *call_get_dialogue(struct call *call, const str *fr
 
 	/* the fromtag monologue may be newly created, or half-complete from the totag, or
 	 * derived from the viabranch. */
-	if (!ft->tag.s)
+	if (!ft->tag.s || str_cmp_str(&ft->tag, fromtag))
 		__monologue_tag(ft, fromtag);
 
 	__monologue_unkernelize(ft->active_dialogue);
@@ -2989,6 +3204,14 @@ done:
 }
 
 
+static void monologue_stop(struct call_monologue *ml) {
+	media_player_stop(ml->player);
+	for (GList *l = ml->medias.head; l; l = l->next) {
+		struct call_media *m = l->data;
+		t38_gateway_stop(m->t38_gateway);
+	}
+}
+
 
 int call_delete_branch(const str *callid, const str *branch,
 	const str *fromtag, const str *totag, bencode_item_t *output, int delete_delay)
@@ -3052,7 +3275,7 @@ do_delete:
 	if (output)
 		ng_call_stats(c, fromtag, totag, output, NULL);
 
-	media_player_stop(ml->player);
+	monologue_stop(ml);
 
 	if (delete_delay > 0) {
 		ilog(LOG_INFO, "Scheduling deletion of call branch '" STR_FORMAT_M "' "
@@ -3073,7 +3296,7 @@ do_delete:
 del_all:
 	for (i = c->monologues.head; i; i = i->next) {
 		ml = i->data;
-		media_player_stop(ml->player);
+		monologue_stop(ml);
 	}
 
 	if (delete_delay > 0) {

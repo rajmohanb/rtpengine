@@ -18,13 +18,14 @@ CREATE TABLE `recording_calls` (
   `status` enum('recording','completed','confirmed') DEFAULT 'recording',
   PRIMARY KEY (`id`),
   KEY `call_id` (`call_id`)
-)
+);
 CREATE TABLE `recording_streams` (
   `id` int(10) unsigned NOT NULL AUTO_INCREMENT,
   `call` int(10) unsigned NOT NULL,
   `local_filename` varchar(250) NOT NULL,
   `full_filename` varchar(250) NOT NULL,
   `file_format` varchar(10) NOT NULL,
+  `stream` mediumblob,
   `output_type` enum('mixed','single') NOT NULL,
   `stream_id` int(10) unsigned NOT NULL,
   `sample_rate` int(10) unsigned NOT NULL DEFAULT '0',
@@ -36,7 +37,7 @@ CREATE TABLE `recording_streams` (
   PRIMARY KEY (`id`),
   KEY `call` (`call`),
   CONSTRAINT `fk_call_id` FOREIGN KEY (`call`) REFERENCES `recording_calls` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
-)
+);
 CREATE TABLE `recording_metakeys` (
   `id` int(10) unsigned NOT NULL AUTO_INCREMENT,
   `call` int(10) unsigned NOT NULL,
@@ -46,7 +47,7 @@ CREATE TABLE `recording_metakeys` (
   KEY `prim_lookup` (`value`,`key`),
   KEY `fk_call_idx` (`call`),
   CONSTRAINT `fk_call_idx` FOREIGN KEY (`call`) REFERENCES `recording_calls` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
-)
+);
 */
 
 
@@ -57,6 +58,7 @@ static MYSQL_STMT __thread
 	*stm_close_call,
 	*stm_insert_stream,
 	*stm_close_stream,
+	*stm_delete_stream,
 	*stm_config_stream,
 	*stm_insert_metadata;
 
@@ -74,6 +76,7 @@ static void reset_conn(void) {
 	my_stmt_close(&stm_close_call);
 	my_stmt_close(&stm_insert_stream);
 	my_stmt_close(&stm_close_stream);
+	my_stmt_close(&stm_delete_stream);
 	my_stmt_close(&stm_config_stream);
 	my_stmt_close(&stm_insert_metadata);
 	mysql_close(mysql_conn);
@@ -138,6 +141,8 @@ static int check_conn(void) {
 					"end_timestamp = ? where id = ?"))
 			goto err;
 	}
+	if (prep(&stm_delete_stream, "delete from recording_streams where id = ?"))
+		goto err;
 	if (prep(&stm_config_stream, "update recording_streams set channels = ?, sample_rate = ? where id = ?"))
 		goto err;
 	if (prep(&stm_insert_metadata, "insert into recording_metakeys (`call`, `key`, `value`) values " \
@@ -331,7 +336,7 @@ void db_do_stream(metafile_t *mf, output_t *op, const char *type, stream_t *stre
 		.buffer_length = sizeof(ssrc),
 		.is_unsigned = 1,
 	};
-	if (stream) {
+	if (stream && stream->tag != (unsigned long) -1) {
 		tag_t *tag = tag_get(mf, stream->tag);
 		my_cstr(&b[9], tag->label ? : "");
 	}
@@ -422,6 +427,18 @@ file:;
 	if (!(output_storage & OUTPUT_STORAGE_FILE))
 		remove(filename);
         free(filename);
+}
+
+void db_delete_stream(output_t *op) {
+	if (check_conn())
+		return;
+	if (op->db_id == 0)
+		return;
+
+        MYSQL_BIND b[1];
+	my_ull(&b[0], &op->db_id);
+
+	execute_wrap(&stm_delete_stream, b, NULL);
 }
 
 void db_config_stream(output_t *op) {

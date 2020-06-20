@@ -197,7 +197,7 @@ static int cert_init(void) {
 	if (!BN_set_word(exponent, 0x10001))
 		goto err;
 
-	if (!RSA_generate_key_ex(rsa, 1024, exponent, NULL))
+	if (!RSA_generate_key_ex(rsa, rtpe_config.dtls_rsa_key_size, exponent, NULL))
 		goto err;
 
 	if (!EVP_PKEY_assign_RSA(pkey, rsa))
@@ -247,7 +247,7 @@ static int cert_init(void) {
 
 	/* sign it */
 
-	if (!X509_sign(x509, pkey, EVP_sha1()))
+	if (!X509_sign(x509, pkey, rtpe_config.dtls_signature == 1 ? EVP_sha1() : EVP_sha256()))
 		goto err;
 
 	/* digest */
@@ -513,7 +513,7 @@ int dtls_connection_init(struct dtls_connection *d, struct packet_stream *ps, in
 	SSL_CTX_set_verify(d->ssl_ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
 			verify_callback);
 	SSL_CTX_set_verify_depth(d->ssl_ctx, 4);
-	SSL_CTX_set_cipher_list(d->ssl_ctx, "ALL:!ADH:!LOW:!EXP:!MD5:@STRENGTH");
+	SSL_CTX_set_cipher_list(d->ssl_ctx, rtpe_config.dtls_ciphers);
 
 	if (SSL_CTX_set_tlsext_use_srtp(d->ssl_ctx, ciphers_str))
 		goto error;
@@ -616,20 +616,6 @@ found:
 	memcpy(client.master_salt, &keys[i], cs->master_salt_len);
 	i += cs->master_salt_len;
 	memcpy(server.master_salt, &keys[i], cs->master_salt_len);
-
-	__DBG("SRTP keys negotiated: "
-			"c-m: %02x%02x%02x%02x%02x%02x%02x%02x "
-			"c-s: %02x%02x%02x%02x%02x%02x%02x%02x "
-			"s-m: %02x%02x%02x%02x%02x%02x%02x%02x "
-			"s-s: %02x%02x%02x%02x%02x%02x%02x%02x",
-			client.master_key[0], client.master_key[1], client.master_key[2], client.master_key[3],
-			client.master_key[4], client.master_key[5], client.master_key[6], client.master_key[7],
-			client.master_salt[0], client.master_salt[1], client.master_salt[2], client.master_salt[3],
-			client.master_salt[4], client.master_salt[5], client.master_salt[6], client.master_salt[7],
-			server.master_key[0], server.master_key[1], server.master_key[2], server.master_key[3],
-			server.master_key[4], server.master_key[5], server.master_key[6], server.master_key[7],
-			server.master_salt[0], server.master_salt[1], server.master_salt[2], server.master_salt[3],
-			server.master_salt[4], server.master_salt[5], server.master_salt[6], server.master_salt[7]);
 
 	ilog(LOG_INFO, "DTLS-SRTP successfully negotiated");
 

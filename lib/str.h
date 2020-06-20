@@ -51,6 +51,7 @@ INLINE int str_cmp(const str *a, const char *b);
 INLINE int str_cmp_len(const str *a, const char *b, int len);
 /* compares two str objects */
 INLINE int str_cmp_str(const str *a, const str *b);
+INLINE int str_casecmp_str(const str *a, const str *b);
 /* compares two str objects, allows either to be NULL */
 INLINE int str_cmp_str0(const str *a, const str *b);
 /* inits a str object from a regular string. returns out */
@@ -89,7 +90,7 @@ INLINE int str_token_sep(str *new_token, str *ori_and_remainder, int sep);
 INLINE char *str_ncpy(char *dst, size_t bufsize, const str *src);
 
 /* asprintf() analogs */
-#define str_sprintf(fmt, a...) __str_sprintf(STR_MALLOC_PADDING fmt, a)
+#define str_sprintf(fmt, ...) __str_sprintf(STR_MALLOC_PADDING fmt, ##__VA_ARGS__)
 #define str_vsprintf(fmt, a)   __str_vsprintf(STR_MALLOC_PADDING fmt, a)
 
 /* creates a new empty GString that has mem allocated for a new str object */
@@ -100,6 +101,8 @@ INLINE str *g_string_free_str(GString *gs);
 /* for GHashTables */
 guint str_hash(gconstpointer s);
 gboolean str_equal(gconstpointer a, gconstpointer b);
+guint str_case_hash(gconstpointer s);
+gboolean str_case_equal(gconstpointer a, gconstpointer b);
 
 /* returns a new str object, duplicates the pointers but doesn't duplicate the contents */
 INLINE str *str_slice_dup(const str *);
@@ -181,6 +184,20 @@ INLINE int str_cmp_str(const str *a, const str *b) {
 	if (a->len == 0 && b->len == 0)
 		return 0;
 	return memcmp(a->s, b->s, a->len);
+}
+INLINE int str_casecmp_str(const str *a, const str *b) {
+	if (a->len < b->len)
+		return -1;
+	if (a->len > b->len)
+		return 1;
+	if (a->len == 0 && b->len == 0)
+		return 0;
+	// fail if any strings contains a null byte
+	if (memchr(a->s, '\0', a->len))
+		return -1;
+	if (memchr(b->s, '\0', a->len))
+		return 1;
+	return strncasecmp(a->s, b->s, a->len);
 }
 INLINE int str_cmp_str0(const str *a, const str *b) {
 	if (!a) {

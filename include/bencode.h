@@ -86,6 +86,9 @@ void bencode_buffer_destroy_add(bencode_buffer_t *buf, free_func_t, void *);
 /* Returns the buffer associated with an item, or NULL if pointer given is NULL */
 INLINE bencode_buffer_t *bencode_item_buffer(bencode_item_t *);
 
+/* like strdup() but uses the bencode buffer to store the string */
+INLINE char *bencode_strdup(bencode_buffer_t *, const char *);
+
 
 
 
@@ -278,7 +281,7 @@ char *bencode_collapse_dup(bencode_item_t *root, int *len);
  * created through a decoding process (i.e. not ones created from bencode_dictionary()) have this
  * property. The hash is efficient only up to a certain number of elements (BENCODE_HASH_BUCKETS
  * in bencode.c) contained in the dictionary. If the number of children object exceeds this number,
- * key lookup will be slower than simply linearily traversing the list.
+ * key lookup will be slower than simply linearly traversing the list.
  *
  * The decoding function for dictionary object does not check whether keys are unique within the
  * dictionary. It also does not care about lexicographical order of the keys.
@@ -371,6 +374,12 @@ INLINE bencode_item_t *bencode_str(bencode_buffer_t *buf, const str *s) {
 
 INLINE bencode_item_t *bencode_str_dup(bencode_buffer_t *buf, const str *s) {
 	return bencode_string_len_dup(buf, s->s, s->len);
+}
+
+INLINE char *bencode_strdup(bencode_buffer_t *buf, const char *s) {
+	char *ret = bencode_buffer_alloc(buf, strlen(s) + 1);
+	strcpy(ret, s);
+	return ret;
 }
 
 INLINE bencode_item_t *bencode_dictionary_add(bencode_item_t *dict, const char *key, bencode_item_t *val) {

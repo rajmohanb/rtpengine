@@ -43,6 +43,8 @@
 #include "load.h"
 #include "ssllib.h"
 #include "media_player.h"
+#include "dtmf.h"
+#include "jitter_buffer.h"
 
 
 
@@ -66,11 +68,12 @@ struct rtpengine_config rtpe_config = {
 	.redis_allowed_errors = -1,
 	.redis_disable_time = 10,
 	.redis_connect_timeout = 1000,
-	.rec_method = "pcap",
-	.rec_format = "raw",
 	.media_num_threads = -1,
+	.dtls_rsa_key_size = 2048,
+	.dtls_signature = 256,
 };
 
+char **if_a_global = NULL;
 
 static void sighandler(gpointer x) {
 	sigset_t ss;
@@ -283,29 +286,32 @@ static int redis_ep_parse(endpoint_t *ep, int *db, char **auth, const char *auth
 
 static void options(int *argc, char ***argv) {
 	char **if_a = NULL;
-	char **ks_a = NULL;
+	AUTO_CLEANUP_GVBUF(ks_a);
 	unsigned long uint_keyspace_db;
 	str str_keyspace_db;
 	char **iter;
-	char *listenps = NULL;
-	char *listenudps = NULL;
-	char *listenngs = NULL;
-	char *listencli = NULL;
-	char *graphitep = NULL;
-	char *graphite_prefix_s = NULL;
-	char *redisps = NULL;
-	char *redisps_write = NULL;
-	char *log_facility_cdr_s = NULL;
-	char *log_facility_rtcp_s = NULL;
-	char *log_facility_dtmf_s = NULL;
-	char *log_format = NULL;
+	AUTO_CLEANUP_GBUF(listenps);
+	AUTO_CLEANUP_GBUF(listenudps);
+	AUTO_CLEANUP_GBUF(listenngs);
+	AUTO_CLEANUP_GBUF(listencli);
+	AUTO_CLEANUP_GBUF(graphitep);
+	AUTO_CLEANUP_GBUF(graphite_prefix_s);
+	AUTO_CLEANUP_GBUF(redisps);
+	AUTO_CLEANUP_GBUF(redisps_write);
+	AUTO_CLEANUP_GBUF(log_facility_cdr_s);
+	AUTO_CLEANUP_GBUF(log_facility_rtcp_s);
+	AUTO_CLEANUP_GBUF(log_facility_dtmf_s);
+	AUTO_CLEANUP_GBUF(log_format);
 	int sip_source = 0;
-	char *homerp = NULL;
-	char *homerproto = NULL;
+	AUTO_CLEANUP_GBUF(homerp);
+	AUTO_CLEANUP_GBUF(homerproto);
 	char *endptr;
 	int codecs = 0;
 	double max_load = 0;
 	double max_cpu = 0;
+	AUTO_CLEANUP_GBUF(dtmf_udp_ep);
+	AUTO_CLEANUP_GBUF(endpoint_learning);
+	AUTO_CLEANUP_GBUF(dtls_sig);
 
 	GOptionEntry e[] = {
 		{ "table",	't', 0, G_OPTION_ARG_INT,	&rtpe_config.kernel_table,		"Kernel table to use",		"INT"		},
@@ -341,6 +347,7 @@ static void options(int *argc, char ***argv) {
 		{ "log-facility-rtcp",0,  0, G_OPTION_ARG_STRING, &log_facility_rtcp_s, "Syslog facility to use for logging RTCP", "daemon|local0|...|local7"},
 		{ "log-facility-dtmf",0,  0, G_OPTION_ARG_STRING, &log_facility_dtmf_s, "Syslog facility to use for logging DTMF", "daemon|local0|...|local7"},
 		{ "log-format",	0, 0,	G_OPTION_ARG_STRING,	&log_format,	"Log prefix format",		"default|parsable"},
+		{ "dtmf-log-dest", 0,0,	G_OPTION_ARG_STRING,	&dtmf_udp_ep,	"Destination address for DTMF logging via UDP",	"IP46|HOSTNAME:PORT"	},
 		{ "xmlrpc-format",'x', 0, G_OPTION_ARG_INT,	&rtpe_config.fmt,	"XMLRPC timeout request format to use. 0: SEMS DI, 1: call-id only, 2: Kamailio",	"INT"	},
 		{ "num-threads",  0, 0, G_OPTION_ARG_INT,	&rtpe_config.num_threads,	"Number of worker threads to create",	"INT"	},
 		{ "media-num-threads",  0, 0, G_OPTION_ARG_INT,	&rtpe_config.media_num_threads,	"Number of worker threads for media playback",	"INT"	},
@@ -353,7 +360,7 @@ static void options(int *argc, char ***argv) {
 		{ "max-bandwidth",0, 0,	G_OPTION_ARG_INT64,	&rtpe_config.bw_limit,	"Reject new sessions if bandwidth usage (in bytes per second) exceeds this value",	"INT"	},
 		{ "homer",	0,  0, G_OPTION_ARG_STRING,	&homerp,	"Address of Homer server for RTCP stats","IP46|HOSTNAME:PORT"},
 		{ "homer-protocol",0,0,G_OPTION_ARG_STRING,	&homerproto,	"Transport protocol for Homer (default udp)",	"udp|tcp"	},
-		{ "homer-id",	0,  0, G_OPTION_ARG_STRING,	&rtpe_config.homer_id,	"'Capture ID' to use within the HEP protocol", "INT"	},
+		{ "homer-id",	0,  0, G_OPTION_ARG_INT,	&rtpe_config.homer_id,	"'Capture ID' to use within the HEP protocol", "INT"	},
 		{ "recording-dir", 0, 0, G_OPTION_ARG_STRING,	&rtpe_config.spooldir,	"Directory for storing pcap and metadata files", "FILE"	},
 		{ "recording-method",0, 0, G_OPTION_ARG_STRING,	&rtpe_config.rec_method,	"Strategy for call recording",		"pcap|proc"	},
 		{ "recording-format",0, 0, G_OPTION_ARG_STRING,	&rtpe_config.rec_format,	"File format for stored pcap files",	"raw|eth"	},
@@ -371,11 +378,29 @@ static void options(int *argc, char ***argv) {
 		{ "mysql-user",	0,   0,	G_OPTION_ARG_STRING,	&rtpe_config.mysql_user,"MySQL connection credentials",		"USERNAME"	},
 		{ "mysql-pass",	0,   0,	G_OPTION_ARG_STRING,	&rtpe_config.mysql_pass,"MySQL connection credentials",		"PASSWORD"	},
 		{ "mysql-query",0,   0,	G_OPTION_ARG_STRING,	&rtpe_config.mysql_query,"MySQL select query",			"STRING"	},
+		{ "endpoint-learning",0,0,G_OPTION_ARG_STRING,	&endpoint_learning,	"RTP endpoint learning algorithm",	"delayed|immediate|off|heuristic"	},
+		{ "jitter-buffer",0, 0,	G_OPTION_ARG_INT,	&rtpe_config.jb_length,	"Size of jitter buffer",		"INT" },
+		{ "jb-clock-drift",0,0,	G_OPTION_ARG_NONE,	&rtpe_config.jb_clock_drift,"Compensate for source clock drift",NULL },
+		{ "debug-srtp",0,0,	G_OPTION_ARG_NONE,	&rtpe_config.debug_srtp,"Log raw encryption details for SRTP",	NULL },
+		{ "dtls-rsa-key-size",0, 0,	G_OPTION_ARG_INT,&rtpe_config.dtls_rsa_key_size,"Size of RSA key for DTLS",	"INT"		},
+		{ "dtls-ciphers",0,  0,	G_OPTION_ARG_STRING,	&rtpe_config.dtls_ciphers,"List of ciphers for DTLS",		"STRING"	},
+		{ "dtls-signature",0,  0,G_OPTION_ARG_STRING,	&dtls_sig,		"Signature algorithm for DTLS",		"SHA-256|SHA-1"	},
+
 		{ NULL, }
 	};
 
 	config_load(argc, argv, e, " - next-generation media proxy",
 			"/etc/rtpengine/rtpengine.conf", "rtpengine", &rtpe_config.common);
+
+	// default values, if not configured
+	if (rtpe_config.rec_method == NULL)
+		rtpe_config.rec_method = g_strdup("pcap");
+
+	if (rtpe_config.rec_format == NULL)
+		rtpe_config.rec_format = g_strdup("raw");
+
+	if (rtpe_config.dtls_ciphers == NULL)
+		rtpe_config.dtls_ciphers = g_strdup("DEFAULT:!NULL:!aNULL:!SHA256:!SHA384:!aECDH:!AESGCM+AES256:!aPSK");
 
 	if (codecs) {
 		codeclib_init(1);
@@ -518,6 +543,11 @@ static void options(int *argc, char ***argv) {
 			die("Invalid --log-format option");
 	}
 
+	if (dtmf_udp_ep) {
+		if (endpoint_parse_any_getaddrinfo_full(&rtpe_config.dtmf_udp_ep, dtmf_udp_ep))
+			die("Invalid IP or port '%s' (--dtmf-log-dest)", dtmf_udp_ep);
+	}
+
 	if (!sip_source)
 		trust_address_def = 1;
 
@@ -539,6 +569,43 @@ static void options(int *argc, char ***argv) {
 			die("Too many '%%' placeholders (%u) present in --mysql-query='%s'",
 					count, rtpe_config.mysql_query);
 	}
+
+	enum endpoint_learning el_config = EL_DELAYED;
+	if (endpoint_learning) {
+		if (!strcasecmp(endpoint_learning, "delayed"))
+			el_config = EL_DELAYED;
+		else if (!strcasecmp(endpoint_learning, "immediate"))
+			el_config = EL_IMMEDIATE;
+		else if (!strcasecmp(endpoint_learning, "off"))
+			el_config = EL_OFF;
+		else if (!strcasecmp(endpoint_learning, "heuristic"))
+			el_config = EL_HEURISTIC;
+		else
+			die("Invalid --endpoint-learning option ('%s')", endpoint_learning);
+	}
+	rtpe_config.endpoint_learning = el_config;
+
+	if (dtls_sig) {
+		if (!strcasecmp(dtls_sig, "sha-1"))
+			rtpe_config.dtls_signature = 1;
+		else if (!strcasecmp(dtls_sig, "sha1"))
+			rtpe_config.dtls_signature = 1;
+		else if (!strcasecmp(dtls_sig, "sha-256"))
+			rtpe_config.dtls_signature = 256;
+		else if (!strcasecmp(dtls_sig, "sha256"))
+			rtpe_config.dtls_signature = 256;
+		else
+			die("Invalid --dtls-signature option ('%s')", dtls_sig);
+	}
+
+	if (rtpe_config.dtls_rsa_key_size < 0)
+		die("Invalid --dtls-rsa-key-size (%i)", rtpe_config.dtls_rsa_key_size);
+
+	if (rtpe_config.jb_length < 0)
+		die("Invalid negative jitter buffer size");
+
+	// free local vars
+	if_a_global = if_a; // -> content is used; needs to be freed later
 }
 
 void fill_initial_rtpe_cfg(struct rtpengine_config* ini_rtpe_cfg) {
@@ -600,6 +667,7 @@ void fill_initial_rtpe_cfg(struct rtpengine_config* ini_rtpe_cfg) {
 	ini_rtpe_cfg->redis_ep = rtpe_config.redis_ep;
 	ini_rtpe_cfg->redis_write_ep = rtpe_config.redis_write_ep;
 	ini_rtpe_cfg->homer_ep = rtpe_config.homer_ep;
+	ini_rtpe_cfg->endpoint_learning = rtpe_config.endpoint_learning;
 
 	ini_rtpe_cfg->b2b_url = g_strdup(rtpe_config.b2b_url);
 	ini_rtpe_cfg->redis_auth = g_strdup(rtpe_config.redis_auth);
@@ -609,6 +677,41 @@ void fill_initial_rtpe_cfg(struct rtpengine_config* ini_rtpe_cfg) {
 	ini_rtpe_cfg->rec_method = g_strdup(rtpe_config.rec_method);
 	ini_rtpe_cfg->rec_format = g_strdup(rtpe_config.rec_format);
 
+	ini_rtpe_cfg->jb_length = rtpe_config.jb_length;
+	ini_rtpe_cfg->jb_clock_drift = rtpe_config.jb_clock_drift;
+}
+
+static void unfill_initial_rtpe_cfg(struct rtpengine_config* ini_rtpe_cfg) {
+	// free g_strdup
+	g_free(ini_rtpe_cfg->b2b_url);
+	g_free(ini_rtpe_cfg->redis_auth);
+	g_free(ini_rtpe_cfg->redis_write_auth);
+	g_free(ini_rtpe_cfg->spooldir);
+	g_free(ini_rtpe_cfg->iptables_chain);
+	g_free(ini_rtpe_cfg->rec_method);
+	g_free(ini_rtpe_cfg->rec_format);
+}
+
+static void options_free(void) {
+	// free config options
+	g_free(rtpe_config.b2b_url);
+	g_free(rtpe_config.spooldir);
+	g_free(rtpe_config.rec_method);
+	g_free(rtpe_config.rec_format);
+	g_free(rtpe_config.iptables_chain);
+	g_free(rtpe_config.scheduling);
+	g_free(rtpe_config.idle_scheduling);
+	g_free(rtpe_config.mysql_host);
+	g_free(rtpe_config.mysql_user);
+	g_free(rtpe_config.mysql_pass);
+	g_free(rtpe_config.mysql_query);
+	g_free(rtpe_config.dtls_ciphers);
+
+	// free common config options
+	config_load_free(&rtpe_config.common);
+
+	// free if_a STRING LIST
+	g_strfreev(if_a_global);
 }
 
 static void early_init(void) {
@@ -643,6 +746,9 @@ static void init_everything(void) {
 	statistics_init();
 	codeclib_init(0);
 	media_player_init();
+	dtmf_init();
+	jitter_buffer_init();
+	t38_init();
 }
 
 
@@ -730,10 +836,18 @@ no_kernel:
 
 		if (!is_addr_unspecified(&rtpe_config.redis_ep.address)) {
 			rtpe_redis = redis_new(&rtpe_config.redis_ep, rtpe_config.redis_db, rtpe_config.redis_auth, rtpe_redis_write ? ANY_REDIS_ROLE : MASTER_REDIS_ROLE, rtpe_config.no_redis_required);
-			rtpe_redis_notify = redis_new(&rtpe_config.redis_ep, rtpe_config.redis_db, rtpe_config.redis_auth, rtpe_redis_write ? ANY_REDIS_ROLE : MASTER_REDIS_ROLE, rtpe_config.no_redis_required);
-			if (!rtpe_redis || !rtpe_redis_notify)
-			die("Cannot start up without running Redis %s database! See also NO_REDIS_REQUIRED parameter.",
+			if (!rtpe_redis)
+			die("Cannot start up without running Redis %s database! "
+					"See also NO_REDIS_REQUIRED parameter.",
 				endpoint_print_buf(&rtpe_config.redis_ep));
+
+			if (rtpe_config.redis_subscribed_keyspaces.length) {
+				rtpe_redis_notify = redis_new(&rtpe_config.redis_ep, rtpe_config.redis_db, rtpe_config.redis_auth, rtpe_redis_write ? ANY_REDIS_ROLE : MASTER_REDIS_ROLE, rtpe_config.no_redis_required);
+				if (!rtpe_redis_notify)
+					die("Cannot start up without running notification Redis %s database! "
+							"See also NO_REDIS_REQUIRED parameter.",
+						endpoint_print_buf(&rtpe_config.redis_ep));
+			}
 
 		if (!rtpe_redis_write)
 			rtpe_redis_write = rtpe_redis;
@@ -784,7 +898,7 @@ int main(int argc, char **argv) {
 	thread_create_detach_prio(poller_timer_loop, rtpe_poller, rtpe_config.idle_scheduling, rtpe_config.idle_priority);
 	thread_create_detach_prio(load_thread, NULL, rtpe_config.idle_scheduling, rtpe_config.idle_priority);
 
-	if (!is_addr_unspecified(&rtpe_config.redis_ep.address))
+	if (!is_addr_unspecified(&rtpe_config.redis_ep.address) && rtpe_redis_notify)
 		thread_create_detach(redis_notify_loop, NULL);
 
 	if (!is_addr_unspecified(&rtpe_config.graphite_ep.address))
@@ -812,6 +926,9 @@ int main(int argc, char **argv) {
 		thread_create_detach_prio(media_player_loop, NULL, rtpe_config.scheduling, rtpe_config.priority);
 #endif
 		thread_create_detach_prio(send_timer_loop, NULL, rtpe_config.scheduling, rtpe_config.priority);
+		if (rtpe_config.jb_length > 0)
+			thread_create_detach_prio(jitter_buffer_loop, NULL, rtpe_config.scheduling,
+					rtpe_config.priority);
 	}
 
 
@@ -822,14 +939,19 @@ int main(int argc, char **argv) {
 
 	service_notify("STOPPING=1\n");
 
-	if (!is_addr_unspecified(&rtpe_config.redis_ep.address)) {
+	if (!is_addr_unspecified(&rtpe_config.redis_ep.address) && rtpe_redis_notify)
 		redis_notify_event_base_action(EVENT_BASE_LOOPBREAK);
-		redis_notify_event_base_action(EVENT_BASE_FREE);
-	}
 
 	threads_join_all(1);
 
+	if (!is_addr_unspecified(&rtpe_config.redis_ep.address) && rtpe_redis_notify)
+		redis_notify_event_base_action(EVENT_BASE_FREE);
+
 	ilog(LOG_INFO, "Version %s shutting down", RTPENGINE_VERSION);
+
+	unfill_initial_rtpe_cfg(&initial_rtpe_config);
+
+	options_free();
 
 	return 0;
 }

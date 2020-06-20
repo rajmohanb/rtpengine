@@ -37,7 +37,7 @@ version number and exit.
 
 Print a list of supported codecs and exit.
 
-=item B<--config-file>
+=item B<--config-file=>I<FILE>
 
 Specifies the location of a config file to be used. The config file is an
 I<.ini> style config file, with all command-line options listed here also
@@ -56,7 +56,7 @@ semicolons (see section L<INTERFACES> below for an example).
 As a special value, B<none> can be passed here to suppress loading of the
 default config file.
 
-=item B<--config-section>
+=item B<--config-section=>I<STRING>
 
 Specifies the I<.ini> style section to be used in the config file.
 Multiple sections can be present in the config file, but only one can be
@@ -194,9 +194,9 @@ Default to 30000 and 40000 respectively.
 
 Takes an integer as argument and controls the highest log level which
 will be sent to syslog.
-The log levels correspond to the ones found in the syslog(3) man page.
-The default value is 6, equivalent to LOG_INFO.
-The highest possible value is 7 (LOG_DEBUG) which will log everything.
+The log levels correspond to the ones found in the L<syslog(3)> man page.
+The default value is B<6>, equivalent to LOG_INFO.
+The highest possible value is B<7> (LOG_DEBUG) which will log everything.
 
 During runtime, the log level can be decreased by sending the signal
 SIGURS1 to the daemon and can be increased with the signal SIGUSR2.
@@ -235,6 +235,13 @@ The B<parsable> output style is similar, but makes the ID easier to
 parse by enclosing it in quotes, such as B<[ID="CALLID"]>
 or B<[ID="CALLID" port="12345"]>.
 
+=item B<--dtmf-log-dest=>I<IP46>:I<PORT>
+
+Configures a target address for logging detected DTMF event. Similar
+to the feature enabled by B<--log-facilty-dtmf>, but instead of writing
+detected DTMF events to syslog, this sends the JSON payload to the
+given address as UDP packets.
+
 =item B<--log-srtp-keys>
 
 Write SRTP keys to error log instead of debug log.
@@ -249,12 +256,12 @@ Only useful in combination with B<--foreground>.
 Don't add timestamps to log lines written to stderr.
 Only useful in combination with B<--log-stderr>.
 
-=item B<--log-mark-prefix>
+=item B<--log-mark-prefix=>I<STRING>
 
 Prefix to be added to particular data fields in log files that are deemed
 sensitive and/or private information. Defaults to an empty string.
 
-=item B<--log-mark-suffix>
+=item B<--log-mark-suffix=>I<STRING>
 
 Suffix to be added to particular data fields in log files that are deemed
 sensitive and/or private information. Defaults to an empty string.
@@ -289,7 +296,7 @@ old behaviour.
 
 Enables the B<DTLS=passive> flag for all calls unconditionally.
 
-=item B<-d>, B<--delete-delay>
+=item B<-d>, B<--delete-delay=>I<INT>
 
 Delete the call from memory after the specified delay from memory.
 Can be set to zero for immediate call deletion.
@@ -333,7 +340,7 @@ password is B<RTPENGINE_REDIS_WRITE_AUTH_PW>.
 When both options are given, B<rtpengine> will start and use the Redis
 database regardless of the database's role (master or slave).
 
-=item B<-k>, B<--subscribe-keyspace>
+=item B<-k>, B<--subscribe-keyspace=>I<INT>
 
 List of redis keyspaces to subscribe.
 If this is not present, no keyspaces are subscribed (default behaviour).
@@ -368,7 +375,7 @@ are not reloaded upon rtpengine startup, even though rtpengine still starts.
 If this parameter is present and has a value >= 0, it will configure how
 many consecutive errors are allowed when communicating with a redis server
 before the redis communication will be temporarily disabled for that server.
-While the communcation is disabled there will be no attempts to reconnect
+While the communication is disabled there will be no attempts to reconnect
 to redis or send commands to that server.
 Default value is -1, meaning that this feature is disabled.
 This parameter can also be set or listed via B<rtpengine-ctl>.
@@ -648,6 +655,40 @@ An example configuration might look like this:
 
   mysql-query = select data from voip.files where id = %llu
 
+=item B<--endpoint-learning=>B<delayed>|B<immediate>|B<off>|B<heuristic>
+
+Chooses one of the available algorithms to learn RTP endpoint addresses. The
+legacy setting is B<delayed> which waits 3 seconds before committing to an
+endpoint address, which is then learned from the first incoming RTP packet seen
+after this delay. The setting B<immediate> learns the endpoint address from the
+first incoming packet seen without the 3-second delay. Using B<off> disables
+endpoint learning altogether, likely breaking clients behind NAT. The setting
+B<heuristic> includes the 3-second delay, but source addresses seen from
+incoming RTP packets are ranked according to preference: If a packet with a
+source address and port matching the SDP address is seen, this address is used.
+Otherwise, if a packet with a matching source address (but a different port) is
+seen, that address is used. Otherwise, if a packet with a matching source port
+(but different address) is seen, that address is used. Otherwise, the source
+address of any incoming packet seen is used.
+
+=item B<--jitter-buffer=>I<INT>
+
+Size of (incoming) jitter buffer in packets. A value of zero (the default)
+disables the jitter buffer. The jitter buffer is currently only implemented for
+userspace operation.
+
+=item B<--jb-clock-drift>
+
+Enable clock drift compensation for the jitter buffer.
+
+=item B<--debug-srtp>
+
+Enable extra log messages to help debug SRTP issues. Per-packet details such as
+sequence numbers, ROC, payloads (plain text and encrypted), authentication
+tags, etc are recorded to the log. Every RTCP packet is logged in this way,
+while every 512th RTP packet is logged. Only applies to packets
+forwarded/processed in userspace.
+
 =back
 
 =head1 INTERFACES
@@ -694,7 +735,7 @@ This can be useful in certain cases, such as your SIP proxy being behind NAT.
 For example, I<--interface=10.65.76.2!192.0.2.4> means that I<10.65.76.2>
 is the actual local address on the server, but outgoing SDP bodies should
 advertise I<192.0.2.4> as the address that endpoints should talk to.
-Note that you may have to escape the exlamation point from your shell
+Note that you may have to escape the exclamation point from your shell
 when using command-line options, e.g. using I<\!>.
 
 Giving an interface a name (separated from the address by a slash) is
@@ -794,7 +835,7 @@ Successful termination.
 
 =item B<1>
 
-An error ocurred.
+An error occurred.
 
 =back
 

@@ -210,10 +210,10 @@ static void mix_silence_fill(mix_t *mix) {
 		return;
 
 	for (int i = 0; i < NUM_INPUTS; i++) {
-		// check the pts of each input and give them max 1 second of delay.
+		// check the pts of each input and give them max 0.5 second of delay.
 		// if they fall behind too much, fill input with silence. otherwise
 		// output stalls and won't produce media
-		mix_silence_fill_idx_upto(mix, i, mix->out_pts - mix->format.clockrate);
+		mix_silence_fill_idx_upto(mix, i, mix->out_pts - mix->format.clockrate / 2);
 	}
 }
 
@@ -244,6 +244,12 @@ int mix_add(mix_t *mix, AVFrame *frame, unsigned int idx, output_t *output) {
 
 	// fill missing time
 	mix_silence_fill_idx_upto(mix, idx, frame->pts);
+
+	// check for pts gap. this is the opposite of silence fill-in. if the frame
+	// pts is behind the expected input pts, there was a gap and we reset our
+	// pts adjustment
+	if (G_UNLIKELY(frame->pts < mix->in_pts[idx]))
+		mix->pts_offs[idx] += mix->in_pts[idx] - frame->pts;
 
 	uint64_t next_pts = frame->pts + frame->nb_samples;
 

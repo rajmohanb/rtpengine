@@ -1,3 +1,357 @@
+ngcp-rtpengine (8.5.0.0+0~mr8.5.0.0) unstable; urgency=medium
+
+  [ Richard Fuchs ]
+  * [10ab85b] TT#76368 remove some graphite functions from global namespace
+  * [ceb6814] TT#76368 handle connection blocking on graphite writes
+  * [dcce2ba] TT#76368 move graphite timestamping into wrapper macro
+  * [5744c04] TT#76368 add port status to graphite output
+  * [0308ee4] TT#14008 fix compiler warnings
+  * [01cf85f] TT#76711 add missing locking and tree-remove for media player
+  * [61ab3d9] TT#76711 add libdl linkage to testing preload lib
+  * [9b9dde3] TT#76711 don't run send timers that don't exist
+  * [50b0757] TT#76711 add missing log_info_clear in send_timer
+  * [4eee9fb] TT#76711 compile fix for with_transcoding=no
+  * [d847d26] TT#76711 convert codec handlers hash table to direct hash
+  * [6513bfd] TT#76711 split out function to handle media protocols
+  * [2d78c36] TT#76711 allow update of media type
+  * [de69c5e] TT#76711 split codec_handler_get for different protocols
+  * [a68a59f] TT#76711 keep track of the raw SDP format string
+  * [9ff3d66] TT#76711 split out common parts of codec_handlers_update
+  * [641fd16] TT#77358 create helper function to determine RTP protocols
+  * [570ad94] TT#76711 add handler functions for enc/dec packet
+  * [0dc052e] TT#76711 globalise ensure_codec_def function
+  * [f6d1349] TT#76711 fix str_sprintf va_args definition
+  * [6792cde] TT#76711 add custom SDP attributes capability
+  * [9ab6c27] TT#76711 replace SDP media type as necessary
+  * [20607bb] TT#76711 generalise media_player mechanism
+  * [468fca8] TT#76711 error-proof codec_handler_free()
+  * [d872802] TT#76711 T.38 <> audio gateway
+  * [0cd8883] TT#78203 add SRTP debug options
+  * [dfae8d6] TT#78201 add symmetric-codecs flag
+  * [7cbf876] test client: also print old SDP
+  * [6e1d94d] fix compilation on CentOS 7
+  * [1d514a0] TT#78307 add helper functions for SSRC contexts
+  * [cc7a9a5] TT#78307 clean up debug/log messages
+  * [5fa83ce] TT#14008 rtpengine-ctl fix to allow override of default values
+  * [48c3af7] TT#76711 add spandsp logging
+  * [213b607] TT#76711 fix media type ID when restoring from redis
+  * [d611bbb] TT#78501 add T.38 options
+  * [28efacc] TT#76711 more resilient UDPTL handling
+  * [1055a1e] TT#79351 detect and fix payload type collisions
+  * [f5eaa65] TT#76711 allow alternate format for T.38 SDP options
+  * [c1d29a4] TT#79601 support media/DTMF playback to all parties
+  * [e59ccc2] TT#79900 add SDES=lifetime option
+  * [5fc326c] TT#78001 support OSRTP
+  * [35899ec] TT#78900 move codec_get_type into global context
+  * [dfc76d2] TT#78900 leave m=message connection details untouched
+  * [2e4617f] TT#78307 move SSRC send stats to actual point of sending
+  * [34baba9] TT#78307 don't update RTP stats for non-forwarding ports
+  * [92bcedc] TT#78307 keep track of RTP stats also when forwarding
+  * [a168a3c] TT#78307 generate RTCP for media players
+  * [abe7caf] TT#75350 update cipher lists and make the configurable
+  * [bbdedc5] fix OSRTP option for rtpengine-ng-client
+  * [4d08a70] fix kernel module compilation for >= 5.5
+  * [e741a74] fix kernel module compilation for different build flags
+  * [5caf47f] add missing SDES=pad parsing
+  * [cca6ba7] allow protocol=RTP/AVP plus OSRTP-offer
+  * [e516db2] fix warning about possible null string
+  * [c3561be] honour with_transcoding=no in top level makefile
+  * [19a9b44] fix tests after e516db2
+  * [2ef93af] TT#79601 fix possible crash when injecting DTMF
+  * [e1b2532] eliminate (re)connected redis state duplication
+  * [46325d6] TT#81600 fix SRTP when transcoding/DTMF injection is in use
+
+  [ root ]
+  * [e7c85ce] jitter buffer correction
+
+ -- Sipwise Jenkins Builder <jenkins@sipwise.com>  Tue, 19 May 2020 11:12:46 +0200
+
+ngcp-rtpengine (8.4.0.0+0~mr8.4.0.0) unstable; urgency=medium
+
+  [ Richard Fuchs ]
+  * [a1de325] TT#75050 fix SRTP index slip while transcoding
+  * [c70b3f6] TT#74651 fix several mem/resource leaks
+  * [4267e1c] TT#74301 split auto-daemon-test framework into perl module
+  * [18634c4] TT#74301 refactor send_timer into generic timer
+  * [d6ad6a6] TT#74301 convert timerthread_queue entries list to GTree
+  * [ef0d6a3] TT#74301 merge jitter buffer PR #834
+  * [06b8704] TT#74301 add tests for jitter buffer
+  * [92adeb0] TT#75351 delete DB streams that have no corresponding file
+  * [7e0b2c4] TT#75352 add a storage container for codec handlers
+  * [38792c0] TT#75352 don't attempt to send uninitialised packets
+  * [7ea6389] compile fix for with_transcoding=no
+  * [088c58d] avoid calling a non existant encoder
+  * [fbaaf22] compile fix for jitter buffer
+  * [3d83b46] TT#76206 fix call teardown for half established dialogues
+  * [be9caa3] also check for the output encoder
+  * [01002b0] TT#74850 clean up indentation by reversing logic
+  * [d09071a] TT#74850 avoid duplicate dlg.terminate_dlg with reversed tags
+  * [c3f495f] move default values up
+  * [a6f6001] document "list interfaces" CLI command
+  * [335e3d2] TT#76368 clean up graphite writing functions
+  * [51147da] explicitly advertise annexb=no for G.729
+  * [ad4ea21] fix for d09071a
+  * [1c00016] possible null pointer fix
+  * [24cb202] fix compilation under musl libc
+  * [c0be3ea] TT#14008 allow for slightly different DSP outputs
+
+  [ Stefan Mititelu ]
+  * [dbd27f9] Fix crash when redis disconnects/reconnects
+
+  [ Jonas ]
+  * [0778fc1] Update rtpengine-ctl
+
+  [ Balajee SV ]
+  * [c0b28c3] jb_new
+  * [e3a5d45] jb_new
+
+  [ root ]
+  * [195f618] jb_fix
+
+ -- Sipwise Jenkins Builder <jenkins@sipwise.com>  Mon, 16 Mar 2020 11:17:40 +0100
+
+ngcp-rtpengine (8.3.0.0+0~mr8.3.0.0) unstable; urgency=medium
+
+  [ Richard Fuchs ]
+  * [d1e3dc0] byte-swap homer ID as required
+  * [64e56d7] TT#73401 handle changes in RTP payload types
+  * [1c72636] TT#73401 remove useless assertion
+  * [9e05578] wrap-and-sort -ast
+  * [6d22af9] TT#73900 ignore stray RTCP packets when confirming peer addresses
+  * [f23aa26] TT#74050 add support for `unidirectional` flag to test script
+  * [2a2e3f3] TT#74050 handle sinks with null addresses correctly
+  * [5ac0756] TT#74300 run indent over cli_incoming_list_callid
+  * [c3f5282] TT#74300 adapt CLI output to match log output for call stats
+  * [08cdb4c] TT#74300 split intro for call-id CLI output
+
+  [ Sebastian Damm ]
+  * [8d7a77d] debian/control: add libconfig-tiny-perl dependency
+
+  [ Daniel-Constantin Mierla ]
+  * [5b0bee7] use pkg-config to detect xtables library for iptables-extension
+
+ -- Sipwise Jenkins Builder <jenkins@sipwise.com>  Mon, 27 Jan 2020 12:25:42 +0100
+
+ngcp-rtpengine (8.2.0.0+0~mr8.2.0.0) unstable; urgency=medium
+
+  [ Michael Prokop ]
+  * [7fbaf0a] TT#61954 Set debhelper compat level also for ngcp-rtpengine-kernel-source package
+
+  [ Richard Fuchs ]
+  * [228d822] TT#68100 set iLBC encoder and decoder options
+  * [ab77ed5] TT#64601 refuse overriding crypto params from SDES when DTLS is in use
+  * [77087b9] don't try to save untagged streams to db
+  * [8bdeb2d] TT#69701 fix incorrect address used for raddr/rport
+  * [7a28b97] TT#69700 don't compensate for TS gaps with a 1-second delay
+  * [8714914] TT#69700 reduce max allowed delay to half a second
+  * [1ec8276] TT#69700 handle gaps in RTP TS correctly for mix output
+  * [e0dd674] TT#71050 fix branch deletion from via-branch
+  * [bc3d4f7] compile fix for glib versions < 2.30
+
+  [ Guillem Jover ]
+  * [7b77fb6] TT#51701 Switch from deprecated /var/run to /run
+
+  [ Sipwise Jenkins Builder ]
+
+ -- Sipwise Jenkins Builder <jenkins@sipwise.com>  Mon, 25 Nov 2019 14:59:03 +0100
+
+ngcp-rtpengine (8.1.0.0+0~mr8.1.0.0) unstable; urgency=medium
+
+  [ Richard Fuchs ]
+  * [3fb5bef] TT#64301 log xmlrpc children to stderr
+  * [25c84bb] TT#65000 fix kernel module compilation for 5.2 kernels
+  * [ef20e02] TT#64259 split up codec handlers function
+  * [fd16bf5] TT#64259 make DTMF detection switch explicit
+  * [35740cd] TT#64259 add function to inject DTMF events
+  * [68d909c] TT#64259 add functions to skip decoded samples and return encoder PTS
+  * [49f6a88] TT#64259 add function to convert DTMF codes and chars
+  * [b14f3b2] TT#64259 support injecting DTMF tones and events
+  * [8ffc13d] TT#65100 properly cleanup redis async context
+  * [bfc9799] TT#65100 don't start a redis notification context/thread when not in use
+  * [3466700] TT#65800 fix SDES negotiation bug
+  * [a6b4137] fix test suites for different implementations of base64 encoding
+  * [22ea251] don't skip address family selection when zero port is present
+  * [7b60ca8] ignore untagged/wildcard/unknown MLs in delete with via-branch
+  * [65fb99b] TT#66650 fix some SSRC refcount leaks
+  * [068bdb2] TT#65052 support adding pause after DTMF PCM
+  * [3bf3982] TT#65052 support queuing up multiple DTMF events
+  * [4d99ba8] add missing header
+  * [6431cde] TT#64601 fix some compiler warnings
+
+  [ Guillem Jover ]
+  * [781b275] TT#65100 Fix double free for redis context on closure
+
+  [ spchan ]
+  * [290afbb] RPM packaging: detect systemd directories and package unit files
+  * [c147556] EL8: mariadb-devel conflicts with mysql-devel
+  * [487004f] EL7,8: no such package iptables-ipv6
+
+  [ Denys ]
+  * [3905a31] Update rtpengine.spec
+
+  [ Sipwise Jenkins Builder ]
+
+ -- Sipwise Jenkins Builder <jenkins@sipwise.com>  Tue, 08 Oct 2019 09:12:35 +0200
+
+ngcp-rtpengine (8.0.0.0+0~mr8.0.0.0) unstable; urgency=medium
+
+  [ Richard Fuchs ]
+  * [3845a43] change localhost to 127.0.0.1 to avoid resolv problems
+  * [290477d] fix unit test after 8fb603e5
+  * [2397723] TT#61050 detect to-tag changes via via-branch
+  * [79fb320] add missing header include
+  * [3b6f098] TT#61850 normalize `address:port` log printing
+  * [a2e0dd6] TT#62300 kernelise stream even if address doesn't match if possible
+  * [10bd041] refuse startup when spool-dir and output-dir are the same
+  * [24d67d0] fix mem allocation bug resulting in mem corruption during redis restore
+  * [1653f32] don't free redis event base while being used
+  * [c8338a4] TT#64050 add `G729a` as an incorrect alternative to `G729`
+  * [344b3b9] TT#64300 don't attempt to transcode to an unsupported codec
+
+  [ Huseyin Dikme ]
+  * [a4af447] add missing errno include
+
+  [ Razvan Crainea ]
+  * [8fb603e] dtmf: prevent freeing json buf too early
+
+  [ Guillem Jover ]
+  * [fea0206] TT#61954 Update copyright years
+  * [55faffd] TT#61954 Do not pass --no-enable and --no-start to sysvinit and systemd helpers
+  * [2868fc6] TT#61954 Set debhelper compat level in Build-Depends instead of debian/compat
+
+  [ Alex Balashov ]
+  * [0a1c20a] README: Added call recording section and cautionary note about using same directory for spool dir and output / recording dir
+  * [9e79a12] Updated README with link to issue #81.
+
+  [ Sipwise Jenkins Builder ]
+
+ -- Sipwise Jenkins Builder <jenkins@sipwise.com>  Mon, 05 Aug 2019 21:00:14 +0200
+
+ngcp-rtpengine (7.5.0.0+0~mr7.5.0.0) unstable; urgency=medium
+
+  [ Richard Fuchs ]
+  * [a4cca5f] fix compilation for glib >= 2.60
+  * [77e31f1] fix race condition after media player shutdown
+  * [985cd44] fix possible segfault after failed port alloc w/ iptables option
+  * [491865a] test case for github issue #766
+  * [eb60289] TT#58659 fix incorrect escape seq in test script
+  * [5acbf1e] TT#58659 always use the correct codec handler per packet
+  * [b0b43ce] TT#58659 update test script for consistent seq numbers
+  * [2298de7] honour a=rtcp-fb in SDP even if transport is advertised as RTP/(S)AVP
+  * [94f3c0e] TT#58659 remove redundant source PT definition
+  * [af02779] increase buffer size for cmsg
+  * [5308208] further rate limiting for log messages from libav
+  * [db50746] TT#59100 support case insensitive codec names
+  * [ca30eca] correctly set frame_duration option for Opus
+  * [194c9e4] TT#58659 add optional encoder detour
+  * [c0781e5] TT#58659 RFC DTMF to PCM transcoding
+  * [910c03f] TT#58660 PCM to RFC DTMF transcoding
+  * [6a4b08c] add documentation for DTMF transcoding
+  * [e17544a] rate limit log lines resulting from strict-source drops
+  * [7ad9906] TT#59650 fix DTMF related core dump when repacketising
+  * [5ad55f4] add spandsp to list of build requirements
+  * [7803930] TT#59703 generalise build test make macros
+  * [f960799] TT#59703 add build test for dtmf_rx_fillin()
+  * [166aaa0] fix compilation for with_transcoding=no
+  * [fcb08df] TT#59805 add dtmf-log-dest option
+  * [690b8d9] TT#60300 add LimitNOFILE to recording daemon systemd unit
+  * [988d077] TT#60301 fix rtcp-mux logic with branched calls
+  * [f6f484f] TT#59501 add optional RTCP sink
+
+  [ Vitalii Aleksandrov ]
+  * [fe18043] Insert streambuf object to listener->streams before adding it to poller
+
+  [ Sipwise Jenkins Builder ]
+
+ -- Sipwise Jenkins Builder <jenkins@sipwise.com>  Mon, 17 Jun 2019 14:39:44 +0200
+
+ngcp-rtpengine (7.4.0.0+0~mr7.4.0.0) unstable; urgency=medium
+
+  [ Richard Fuchs ]
+  * [0e0a55c] add database schema for recording daemon
+  * [ed5af2d] TT#50652 add YCM helper macro for CSH hashing
+  * [da5cacc] TT#50652 add YCM config for include/
+  * [3032443] TT#50652 remove unnecessary and circular include
+  * [1129676] TT#50652 fix typo
+  * [6092c91] TT#50652 fix possible sequencing bug while resampling
+  * [8f3c309] fix always-transcode not being honoured when only codec-mask was used
+  * [e3ec97f] TT#50652 add -Wstrict-prototypes everywhere
+  * [c53040b] error out on invalid clock rate parsed from RTP format string
+  * [0cccae4] compile fix for with_transcoding=no
+  * [38c9646] TT#50652 move timeval functions into lib
+  * [cfe6f87] TT#50652 split timeval_cmp_ptr into function
+  * [d96dbde] TT#50652 split timer thread functions into separate file
+  * [83965bd] TT#50652 infrastructure to support reading/playing of media files
+  * [3374254] TT#50652 split out codec payload type init function
+  * [6ba60d5] TT#50652 split out packet dequeuing and sending function
+  * [92b08d8] TT#50652 add media playback capability
+  * [4aaccca] TT#50652 separate out media playback routine
+  * [21535fa] TT#50652 support playing back media from memory stream
+  * [8874b4a] TT#50652 use random RTP TS when playing back media
+  * [7cc5309] TT#50652 add support for 8-bit unsigned PCM
+  * [c7051fc] TT#50652 use hash table for AVCodec ID lookup
+  * [29a8384] TT#50652 use a better timeval_cmp function
+  * [d639223] TT#50652 add logging info to media_player timer runs
+  * [3bdad88] TT#50652 create timer to gradually send packets without jitter
+  * [831946a] TT#50652 fix compilation for with_transcode=no
+  * [5b0a010] TT#50652 support playing back media files from database
+  * [e1e6fd4] TT#50652 add explicit libav error reporting
+  * [7da2b52] TT#50652 return media duration to SIP proxy in play_media response
+  * [7f5e16d] TT#50652 add stop_media call
+  * [223996b] TT#50652 add documentation for media playback capability
+  * [7e85d1a] TT#50652 keep existing SSRC context when starting another playback
+  * [8d9a0d2] TT#50652 remove already enqueued packets when media is stopped
+  * [e1825e3] TT#50652 ensure consistent RTP timestamp across media restarts
+  * [c9bae61] TT#50652 add media playback tests
+  * [d449861] TT#50652 separate out and move crypt handler routines
+  * [349954d] TT#50652 handle SRTP output for media playback
+  * [9eea6b1] Reverse participant matching logic
+  * [41cddcc] normalise compat.h handling towards kamailio tree
+  * [661994e] as per docs, remove all relay candidates under force-relay
+  * [40dc49f] TT#50652 stop media playback on call delete
+  * [dc9f997] TT#54800 sequencing fixes
+  * [6921472] TT#54800 add ptime tests
+  * [fb76ef7] TT#54800 fix ptime overrides
+  * [52660ed] TT#54800 add ptime-reverse tests
+  * [9917e65] fix division by zero for dtmf in some cases
+  * [357474d] TT#50652 add label= option to match call participants
+  * [d279789] silence warnings when compiling with -DNDEBUG
+  * [6df650c] fix compilation for older dpkg-parsechangelog
+  * [f01568e] fix compilation for older ffmpeg
+  * [354f754] TT#45617 add no-log-timestamps option
+  * [26b725d] TT#45617 add new options to support log markers for sensitive data
+  * [8eada4c] TT#45617 document new log-mark-prefix/suffix options
+  * [cfbd4bc] Add missing check_conn when running SQL statements
+  * [70b1ae5] Add missing perl-IPC-Cmd build dependency for RPM
+  * [9c6677d] TT#56007 TT#55864 leave xt_RTPENGINE loaded after stop
+  * [cd23c05] TT#56007 TT#55864 make RTPENGINE rules UDP only
+  * [ac825cc] TT#56553 fix double G.722 sample rate issues
+  * [582e645] fix missing recording_on flag set
+  * [3d64af1] fix incorrect sample config (`1` instead of `true`)
+  * [1629225] add `stream` db column to sample db schema
+  * [573cd3f] TT#58050 fix refcount bug
+
+  [ Guillem Jover ]
+  * [1f10dc3] TT#49106 Move the usage information into a new man page
+  * [5e3a59a] TT#49106 Clean up generated man pages
+  * [ec8df35] TT#23584 Use $(MAKE) instead of make to honor parallel builds
+
+  [ Michael Prokop ]
+  * [0a993a3] TT#48650 Explicitly check for gperf binary
+  * [c8b6ec0] TT#50652 docs: fix some minor typos
+
+  [ Vasily Chekalkin ]
+  * [7502e7b] Remove duplicated configuration parameter sample
+
+  [ netaskd ]
+  * [4cdf106] rtpengine.spec: fix building dkms module on a different host kernel version
+  * [7b546e4] add kernel-devel as requires for DKMS module build on target host
+  * [c2ad397] Define requires according to the installed kernel.
+
+  [ Sipwise Jenkins Builder ]
+
+ -- Sipwise Jenkins Builder <jenkins@sipwise.com>  Thu, 25 Apr 2019 14:32:03 +0200
+
 ngcp-rtpengine (7.3.0.0+0~mr7.3.0.0) unstable; urgency=medium
 
   [ Richard Fuchs ]
@@ -252,7 +606,7 @@ ngcp-rtpengine (6.4.0.0+0~mr6.4.0.0) unstable; urgency=medium
 
   [ netaskd ]
   * [5ce19a8] add homer options to el configuration
-  * [62ec9cc] add posibility to use different kernel version
+  * [62ec9cc] add possibility to use different kernel version
 
   [ Michael Prokop ]
   * [4d4abfa] TT#34358 Depend on lsb-release in ngcp-rtpengine-kernel-dkms package.
@@ -479,7 +833,7 @@ ngcp-rtpengine (6.1.0.0+0~mr6.1.0.0) unstable; urgency=medium
   * [ca622b4] set TOS for redis streams
   * [d5fea12] check call.recording structure before using it
   * [3dcddf3] recording-daemon: add option to forward calls
-  * [2250ab1] make METADATA section appear in the metafile at intialization when recording using the proc method
+  * [2250ab1] make METADATA section appear in the metafile at initialization when recording using the proc method
   * [ab0cb0c] don't use g_hash_table_foreach for call_timer_iterator
 
   [ Pawel Kuzak ]
@@ -536,7 +890,7 @@ ngcp-rtpengine (6.0.0.0+0~mr6.0.0.0) unstable; urgency=medium
   * [67de59a] check that redisContext is not NULL before using it
   * [b3ce08a] Count multipexed packets in statistics. Don't count errounously when no stream is found fixes #387
   * [b317acd] don't log corrupted cdr for foreign calls
-  * [cf15275] add stop recording comand to ng interface
+  * [cf15275] add stop recording command to ng interface
   * [bb85236] update readme to add stop recording command
 
   [ Michael Prokop ]
@@ -580,7 +934,7 @@ ngcp-rtpengine (5.4.0.0+0~mr5.4.0.0) unstable; urgency=medium
   * [b1e259c] Document libsrtp AES-256 SRTCP bug for interop
 
   [ Frederic-Philippe Metz ]
-  * [8f01e78] First attempt to seperate more stats and cdr away from the core running code
+  * [8f01e78] First attempt to separate more stats and cdr away from the core running code
   * [95d9420] Adds missing log output
   * [27679b1] Moved the json reader locally and removed it from call struct
   * [d885875] Cleanup according to pull req #335
@@ -670,7 +1024,7 @@ ngcp-rtpengine (5.3.0.0+0~mr5.3.0.0) unstable; urgency=medium
   [ Frederic-Philippe Metz ]
   * [749a7da] Implements redis onekey concept
   * [9ebd06f] Some fixes for pull request #316
-  * [6a3bcf5] Fixes STR_FMT comment my @rfuchs or pullrequest 316
+  * [6a3bcf5] Fixes STR_FMT comment my @rfuchs or pull request #316
   * [88b89ea] Fixes STR_FMT comment my @rfuchs or pull request #316
   * [ed760fb] Fix more issues from richards comments
   * [ea9512c] Adds URI encoding for json strings in redis.
@@ -955,7 +1309,7 @@ ngcp-rtpengine (4.5.0.0+0~mr4.5.0.0) unstable; urgency=medium
   * [05f0317] fix the 'media address' parameter
   * [0206f09] fix obj-debug stuff
   * [a813ddf] fix compiler warnings due to conflicting int types
-  * [ee960b7] dont do DTLS when in passthrough mode
+  * [ee960b7] don't do DTLS when in passthrough mode
   * [942966b] force bencode strings as strings in perl ng-client
   * [1f8d8d7] DTLS tests - WIP
   * [bf8c6d9] split ICE stuff into packages
@@ -1200,7 +1554,7 @@ ngcp-rtpengine (4.1.0.0+0~mr4.1.0.0) unstable; urgency=low
   * [29cf9f8] remove redundant code
   * [18977d4] remove calls to setlogmask (not atomic)
   * [ed2c101] preliminary fixup of new kernel stats - needs more work
-  * [a3bcdc5] dont abort on unknown RTCP payload type
+  * [a3bcdc5] don't abort on unknown RTCP payload type
   * [0381b15] further move RTCP logging until after SRTCP decryption
   * [92cc560] don't shut down ICE agent on consecutive re-invites
   * [9c3ad50] use appropriate crypto context for encryption and decryption
@@ -1260,7 +1614,7 @@ ngcp-rtpengine (4.0.0.0+0~mr4.0.0.0) unstable; urgency=medium
   * [93294f8] don't relearn addresses if the endpoint hasn't changed
   * [0b202d8] Fall back to a different address family if the requested one is unavailable
   * [fd99ecf] don't close call on UDP send error
-  * [c0fab9b] various fixes related to ICE negotation and rtcp-mux
+  * [c0fab9b] various fixes related to ICE negotiation and rtcp-mux
   * [2cfc12b] fix incorrect free order of ICE components
 
   [ Peter Lemenkov ]
@@ -1380,18 +1734,18 @@ ngcp-rtpengine (3.3.0.0+0~mr3.8.0.0) unstable; urgency=low
   * [2460836] remove -e argument from awk
   * [19e0281] disable "list" NG command if glib version is too low
   * [b49f57b] avoid DTLS role change on reinvite
-  * [d0beccb] dont break log lines when logging to stderr
+  * [d0beccb] don't break log lines when logging to stderr
   * [8c8ff56] fix pointer const declaration and make it static
   * [955de10] support proper DTLS shutdown and restart DTLS on FP change
   * [6757c27] add DTLS=passive option
-  * [97b472b] dont break legacy control protocols
+  * [97b472b] don't break legacy control protocols
   * [f826d01] make "trust address" the default behaviour
   * [4c408e5] add --dtls-passive switch
   * [d272e9e] add more flags to stats output
   * [e09fbd2] dtls shutdown clears crypto context as well
   * [91221ef] move DTLS setup logic into separate function for readability
   * [50d1839] reset DTLS and crypto params when endpoints change
-  * [3478629] dont output error message on stun SOFTWARE attribute
+  * [3478629] don't output error message on stun SOFTWARE attribute
   * [a1786d6] segfault fix: ps->sfd can be null
   * [4077225] avoid unnecessary DTLS restarts
   * [7e72bfc] MT#10059 allow freeform interface definitions in init.d script
@@ -1488,7 +1842,7 @@ ngcp-rtpengine (3.3.0.0+0~mr3.6.0.0) unstable; urgency=low
   * [d1165df] update EL specs/init file
   * [e830bf5] update for redis module
   * [af9625d] make multi-homing thread safe
-  * [34ca29b] dont escape exclamation points in sh scripts
+  * [34ca29b] don't escape exclamation points in sh scripts
   * [3de07be] s/MEDIAPROXY/RTPENGINE/
   * [c1d7a52] MT#9065 daemon: don't restart if kernel is needed but not yet installed
   * [6379883] fix str_hash() for archs enforcing aligned pointers
@@ -1497,7 +1851,7 @@ ngcp-rtpengine (3.3.0.0+0~mr3.6.0.0) unstable; urgency=low
 
   [ Camille Oudot ]
   * [47b0252] fix null/empty string check in ng_call_stats
-  * [a51db71] new command: 'list' to retreive the list of active call-ids
+  * [a51db71] new command: 'list' to retrieve the list of active call-ids
   * [6005d14] XMLRPC notifications: more formats
   * [81d8616] list command: several fixes + documentation
   * [faf3e22] logging: choose the log facility from the command line, or log to stderr
@@ -1601,7 +1955,7 @@ ngcp-rtpengine (3.3.0.0+0~mr3.3.0.0) unstable; urgency=medium
   * [5198233] make ICE=force_relay leave SDP endpoint details alone
 
   [ Pablo Ruiz García ]
-  * [cf76901] Do not try to install & initialize module if in kernel suppor has been specifically disabled (ie. TABLE < 0)
+  * [cf76901] Do not try to install & initialize module if in kernel support has been specifically disabled (ie. TABLE < 0)
 
  -- Victor Seva <vseva@sipwise.com>  Mon, 26 May 2014 12:23:29 +0200
 
@@ -1666,8 +2020,8 @@ ngcp-mediaproxy-ng (2.3.2) unstable; urgency=low
   [ Richard Fuchs ]
   * [7d82cd2] updating README
   * [2f0ad34] update init script to "provide itself"
-  * [97d3414] fix bug when trust-address isnt given
-  * [5fa1c1e] dont fail on failed rm
+  * [97d3414] fix bug when trust-address isn't given
+  * [5fa1c1e] don't fail on failed rm
   * [13ad042] rename some keys in the ng protocol (replace dash with space) but retain compatibility
   * [bbc5339] implement and document ng "media address"
   * [7e88b38] change port range defaults to match docs

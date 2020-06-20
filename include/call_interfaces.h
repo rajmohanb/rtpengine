@@ -67,6 +67,8 @@ struct sdp_ng_flags {
 	    strict_source:1,
 	    media_handover:1,
 	    dtls_passive:1,
+	    osrtp_accept:1,
+	    osrtp_offer:1,
 	    reset:1,
 	    all:1,
 	    fragment:1,
@@ -75,6 +77,18 @@ struct sdp_ng_flags {
 	    original_sendrecv:1,
 	    always_transcode:1,
 	    asymmetric_codecs:1,
+	    symmetric_codecs:1,
+	    inject_dtmf:1,
+	    t38_decode:1,
+	    t38_force:1,
+	    t38_stop:1,
+	    t38_no_ecm:1,
+	    t38_no_v17:1,
+	    t38_no_v27ter:1,
+	    t38_no_v29:1,
+	    t38_no_v34:1,
+	    t38_no_iaf:1,
+	    t38_fec:1,
 	    supports_load_limit:1,
 	    dtls_off:1,
 	    sdes_off:1,
@@ -84,7 +98,10 @@ struct sdp_ng_flags {
 	    sdes_encrypted_srtp:1,
 	    sdes_encrypted_srtcp:1,
 	    sdes_authenticated_srtp:1,
-	    pad_crypto:1;
+	    sdes_lifetime:1,
+	    sdes_pad:1,
+	    drop_traffic_start:1,
+	    drop_traffic_stop:1;
 };
 
 
@@ -117,6 +134,7 @@ const char *call_block_media_ng(bencode_item_t *, bencode_item_t *);
 const char *call_unblock_media_ng(bencode_item_t *, bencode_item_t *);
 const char *call_play_media_ng(bencode_item_t *, bencode_item_t *);
 const char *call_stop_media_ng(bencode_item_t *, bencode_item_t *);
+const char *call_play_dtmf_ng(bencode_item_t *, bencode_item_t *);
 const char *call_fork_media_ng(bencode_item_t *input, bencode_item_t *output);
 const char *call_fork_answer_ng(bencode_item_t *input, bencode_item_t *output);
 const char *call_delete_leg_ng(bencode_item_t *input, bencode_item_t *output);

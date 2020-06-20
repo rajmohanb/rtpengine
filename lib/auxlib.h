@@ -42,6 +42,7 @@ extern volatile int rtpe_shutdown;
 void daemonize(void);
 void wpidfile(void);
 void service_notify(const char *message);
+void config_load_free(struct rtpengine_common_config *);
 void config_load(int *argc, char ***argv, GOptionEntry *entries, const char *description,
 		char *default_config, char *default_section,
 		struct rtpengine_common_config *);
@@ -64,6 +65,8 @@ int uint32_eq(const void *a, const void *b);
 #define AUTO_CLEANUP_INIT(decl, func, val)	AUTO_CLEANUP(decl, func) = val
 #define AUTO_CLEANUP_NULL(decl, func)		AUTO_CLEANUP_INIT(decl, func, 0)
 #define AUTO_CLEANUP_BUF(var)			AUTO_CLEANUP_NULL(char *var, free_buf)
+#define AUTO_CLEANUP_GBUF(var)			AUTO_CLEANUP_NULL(char *var, free_gbuf)
+#define AUTO_CLEANUP_GVBUF(var)			AUTO_CLEANUP_NULL(char **var, free_gvbuf)
 
 
 /*** STRING HELPERS ***/
@@ -266,6 +269,21 @@ INLINE double ntp_ts_to_double(u_int32_t whole, u_int32_t frac) {
 }
 
 
+/*** GLIB HELPERS ***/
+
+INLINE int g_tree_clear_cb(void *k, void *v, void *p) {
+	GQueue *q = p;
+	g_queue_push_tail(q, k);
+	return 0;
+}
+INLINE void g_tree_clear(GTree *t) {
+	GQueue q = G_QUEUE_INIT;
+	g_tree_foreach(t, g_tree_clear_cb, &q);
+	while (q.length) {
+		void *k = g_queue_pop_head(&q);
+		g_tree_remove(t, k);
+	}
+}
 
 
 #endif

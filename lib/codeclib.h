@@ -7,6 +7,32 @@ struct packet_sequencer_s;
 typedef struct codec_def_s codec_def_t;
 typedef struct packet_sequencer_s packet_sequencer_t;
 
+enum media_type {
+	MT_UNKNOWN = 0,
+	MT_AUDIO,
+	MT_VIDEO,
+	MT_IMAGE,
+	MT_MESSAGE,
+	MT_OTHER,
+};
+
+
+#include "str.h"
+
+INLINE enum media_type codec_get_type(const str *type) {
+	if (!type || !type->len)
+		return MT_UNKNOWN;
+	if (!str_cmp(type, "audio"))
+		return MT_AUDIO;
+	if (!str_cmp(type, "video"))
+		return MT_VIDEO;
+	if (!str_cmp(type, "image"))
+		return MT_IMAGE;
+	if (!str_cmp(type, "message"))
+		return MT_MESSAGE;
+	return MT_OTHER;
+}
+
 
 #ifndef WITHOUT_CODECLIB
 
@@ -19,7 +45,6 @@ typedef struct packet_sequencer_s packet_sequencer_t;
 #include <bcg729/encoder.h>
 #include <bcg729/decoder.h>
 #endif
-#include "str.h"
 
 
 
@@ -46,14 +71,6 @@ typedef void set_enc_options_f(encoder_t *, const str *);
 typedef void set_dec_options_f(decoder_t *, const str *);
 
 
-
-enum media_type {
-	MT_UNKNOWN = 0,
-	MT_AUDIO,
-	MT_VIDEO,
-	MT_IMAGE,
-	MT_OTHER,
-};
 
 struct codec_type_s {
 	void (*def_init)(codec_def_t *);
@@ -104,7 +121,7 @@ struct codec_def_s {
 	    support_decoding:1;
 
 	// flags
-	int pseudocodec:1,
+	int supplemental:1,
 	    dtmf:1; // special case
 
 	const codec_type_t *codec_type;
@@ -141,10 +158,16 @@ struct decoder_s {
 #ifdef HAVE_BCG729
 		bcg729DecoderChannelContextStruct *bcg729;
 #endif
+		struct {
+			unsigned long start_ts;
+			unsigned int event;
+			unsigned long duration;
+		} dtmf;
 	} u;
 
 	unsigned long rtp_ts;
 	uint64_t pts;
+	int ptime;
 };
 
 struct encoder_s {
@@ -192,11 +215,10 @@ void codeclib_init(int);
 
 const codec_def_t *codec_find(const str *name, enum media_type);
 const codec_def_t *codec_find_by_av(enum AVCodecID);
-enum media_type codec_get_type(const str *type);
 
 
-decoder_t *decoder_new_fmt(const codec_def_t *def, int clockrate, int channels, const format_t *resample_fmt);
-decoder_t *decoder_new_fmtp(const codec_def_t *def, int clockrate, int channels, const format_t *resample_fmt,
+decoder_t *decoder_new_fmt(const codec_def_t *def, int clockrate, int channels, int ptime, const format_t *resample_fmt);
+decoder_t *decoder_new_fmtp(const codec_def_t *def, int clockrate, int channels, int ptime, const format_t *resample_fmt,
 		const str *fmtp);
 void decoder_close(decoder_t *dec);
 int decoder_input_data(decoder_t *dec, const str *data, unsigned long ts,
@@ -220,6 +242,7 @@ void __packet_sequencer_init(packet_sequencer_t *ps, GDestroyNotify);
 INLINE void packet_sequencer_init(packet_sequencer_t *ps, GDestroyNotify);
 void packet_sequencer_destroy(packet_sequencer_t *ps);
 void *packet_sequencer_next_packet(packet_sequencer_t *ps);
+int packet_sequencer_next_ok(packet_sequencer_t *ps);
 void *packet_sequencer_force_next_packet(packet_sequencer_t *ps);
 int packet_sequencer_insert(packet_sequencer_t *ps, seq_packet_t *);
 
@@ -257,10 +280,8 @@ INLINE char *av_error(int no) {
 #else
 
 // stubs
-enum media_type {
-	MT_INVALID = -1,
-};
 struct codec_def_s {
+	int dtmf;
 };
 struct packet_sequencer_s {
 };
@@ -270,9 +291,6 @@ INLINE void codeclib_init(int print) {
 		printf("No codecs supported.\n");
 }
 
-INLINE enum media_type codec_get_type(const str *type) {
-	return -1;
-}
 INLINE const codec_def_t *codec_find(const str *name, enum media_type type) {
 	return NULL;
 }

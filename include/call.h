@@ -20,6 +20,7 @@
 #include "recording.h"
 #include "statistics.h"
 #include "codeclib.h"
+#include "t38.h"
 
 #define UNDEFINED ((unsigned int) -1)
 
@@ -95,6 +96,7 @@ enum call_type {
 #define SHARED_FLAG_TRICKLE_ICE			0x00000400
 #define SHARED_FLAG_ICE_LITE			0x00000800
 #define SHARED_FLAG_UNIDIRECTIONAL		0x00001000
+#define SHARED_FLAG_RTCP_FB			0x00002000
 
 /* struct stream_params */
 #define SP_FLAG_NO_RTCP				0x00010000
@@ -111,6 +113,7 @@ enum call_type {
 #define SP_FLAG_MEDIA_HANDOVER			SHARED_FLAG_MEDIA_HANDOVER
 #define SP_FLAG_TRICKLE_ICE			SHARED_FLAG_TRICKLE_ICE
 #define SP_FLAG_ICE_LITE			SHARED_FLAG_ICE_LITE
+#define SP_FLAG_RTCP_FB				SHARED_FLAG_RTCP_FB
 
 /* struct packet_stream */
 #define PS_FLAG_RTP				0x00010000
@@ -148,6 +151,8 @@ enum call_type {
 #define MEDIA_FLAG_LOOP_CHECK			0x00400000
 #define MEDIA_FLAG_TRANSCODE			0x00800000
 #define MEDIA_FLAG_PTIME_OVERRIDE		0x01000000
+#define MEDIA_FLAG_RTCP_FB			SHARED_FLAG_RTCP_FB
+#define MEDIA_FLAG_GENERATOR			0x02000000
 
 /* access macros */
 #define SP_ISSET(p, f)		bf_isset(&(p)->sp_flags, SP_FLAG_ ## f)
@@ -190,6 +195,7 @@ struct rtp_payload_type;
 struct media_player;
 struct send_timer;
 struct transport_protocol;
+struct jitter_buffer;
 
 
 typedef bencode_buffer_t call_buffer_t;
@@ -207,6 +213,7 @@ struct stream_params {
 	struct endpoint		rtcp_endpoint;
 	unsigned int		consecutive_ports;
 	const struct transport_protocol *protocol;
+	str			format_str;
 	GQueue			sdes_params; // slice-alloc'd
 	str			direction[2];
 	sockfamily_t		*desired_family;
@@ -218,6 +225,7 @@ struct stream_params {
 	str			ice_pwd;
 	int			ptime;
 	str			media_id;
+	struct t38_options	t38_options;
 };
 
 struct endpoint_map {
@@ -257,17 +265,19 @@ struct packet_stream {
 	struct packet_stream	*rtcp_sibling;	/* LOCK: call->master_lock */
 	const struct streamhandler *handler;	/* LOCK: in_lock */
 	struct endpoint		endpoint;	/* LOCK: out_lock */
+	struct endpoint		detected_endpoints[4];	/* LOCK: out_lock */
 	struct endpoint		advertised_endpoint; /* RO */
 	struct crypto_context	crypto;		/* OUT direction, LOCK: out_lock */
 	struct ssrc_ctx		*ssrc_in,	/* LOCK: in_lock */ // XXX eliminate these
 				*ssrc_out;	/* LOCK: out_lock */
 	struct send_timer	*send_timer;	/* RO */
+	struct jitter_buffer	*jb;		/* RO */
 
 	struct stats		stats;
 	struct stats		kernel_stats;
 	atomic64		last_packet;
 	GHashTable		*rtp_stats;	/* LOCK: call->master_lock */
-	volatile struct rtp_stats *rtp_stats_cache;
+	struct rtp_stats	*rtp_stats_cache;
 
 #if RTP_LOOP_PROTECT
 	/* LOCK: in_lock: */
@@ -289,9 +299,10 @@ struct call_media {
 
 	unsigned int		index;		/* RO */
 	unsigned int		unique_id;	/* RO */
-	str			type;		/* RO */
-	enum media_type		type_id;	// RO
+	str			type;
+	enum media_type		type_id;
 	const struct transport_protocol *protocol;
+	str			format_str;
 	sockfamily_t		*desired_family;
 	const struct logical_intf *logical_intf;
 
@@ -314,10 +325,16 @@ struct call_media {
 	GHashTable		*codec_names_send; // codec name -> GQueue of int payload types; storage container
 	GQueue			codecs_prefs_send; // storage container
 
+	GQueue			sdp_attributes; // str_sprintf()
+
 	GHashTable		*codec_handlers; // int payload type -> struct codec_handler
 						// XXX combine this with 'codecs_recv' hash table?
-	volatile struct codec_handler *codec_handler_cache;
+	GQueue			codec_handlers_store; // storage for struct codec_handler
+	struct codec_handler	*codec_handler_cache;
 	struct rtcp_handler	*rtcp_handler;
+	struct codec_handler	*dtmf_injector;
+	struct t38_gateway	*t38_gateway;
+	struct codec_handler	*t38_handler;
 
 	int			ptime; // either from SDP or overridden
 
@@ -390,6 +407,7 @@ struct call {
 	int			block_media:1;
 	int			recording_on:1;
 	int			rec_forwarding:1;
+	int			drop_traffic:1;
 };
 
 
@@ -417,7 +435,7 @@ struct call_monologue *call_get_mono_dialogue(struct call *call, const str *from
 struct call_monologue *call_get_forked_mono_dialogue(struct call *call, const str *fromtag, const str *totag,
 		const str *viabranch);
 struct call *call_get(const str *callid);
-int monologue_offer_answer(struct call_monologue *monologue, GQueue *streams, const struct sdp_ng_flags *flags);
+int monologue_offer_answer(struct call_monologue *monologue, GQueue *streams, struct sdp_ng_flags *flags);
 int call_delete_branch(const str *callid, const str *branch,
 	const str *fromtag, const str *totag, bencode_item_t *output, int delete_delay);
 void call_destroy(struct call *);

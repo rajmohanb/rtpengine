@@ -26,6 +26,7 @@
 #include "main.h"
 #include "codec.h"
 #include "media_player.h"
+#include "jitter_buffer.h"
 
 
 #ifndef PORT_RANDOM_MIN
@@ -93,6 +94,8 @@ const struct transport_protocol transport_protocols[] = {
 	[PROTO_RTP_AVP] = {
 		.index		= PROTO_RTP_AVP,
 		.name		= "RTP/AVP",
+		.avpf_proto	= PROTO_RTP_AVPF,
+		.osrtp_proto	= PROTO_RTP_SAVP_OSRTP,
 		.rtp		= 1,
 		.srtp		= 0,
 		.avpf		= 0,
@@ -101,6 +104,7 @@ const struct transport_protocol transport_protocols[] = {
 	[PROTO_RTP_SAVP] = {
 		.index		= PROTO_RTP_SAVP,
 		.name		= "RTP/SAVP",
+		.avpf_proto	= PROTO_RTP_SAVPF,
 		.rtp		= 1,
 		.srtp		= 1,
 		.avpf		= 0,
@@ -109,6 +113,7 @@ const struct transport_protocol transport_protocols[] = {
 	[PROTO_RTP_AVPF] = {
 		.index		= PROTO_RTP_AVPF,
 		.name		= "RTP/AVPF",
+		.osrtp_proto	= PROTO_RTP_SAVPF_OSRTP,
 		.rtp		= 1,
 		.srtp		= 0,
 		.avpf		= 1,
@@ -125,6 +130,7 @@ const struct transport_protocol transport_protocols[] = {
 	[PROTO_UDP_TLS_RTP_SAVP] = {
 		.index		= PROTO_UDP_TLS_RTP_SAVP,
 		.name		= "UDP/TLS/RTP/SAVP",
+		.avpf_proto	= PROTO_UDP_TLS_RTP_SAVPF,
 		.rtp		= 1,
 		.srtp		= 1,
 		.avpf		= 0,
@@ -144,6 +150,25 @@ const struct transport_protocol transport_protocols[] = {
 		.rtp		= 0,
 		.srtp		= 0,
 		.avpf		= 0,
+		.tcp		= 0,
+	},
+	[PROTO_RTP_SAVP_OSRTP] = {
+		.index		= PROTO_RTP_SAVP_OSRTP,
+		.name		= "RTP/AVP",
+		.avpf_proto	= PROTO_RTP_SAVPF_OSRTP,
+		.rtp		= 1,
+		.srtp		= 1,
+		.osrtp		= 1,
+		.avpf		= 0,
+		.tcp		= 0,
+	},
+	[PROTO_RTP_SAVPF_OSRTP] = {
+		.index		= PROTO_RTP_SAVPF_OSRTP,
+		.name		= "RTP/AVPF",
+		.rtp		= 1,
+		.srtp		= 1,
+		.osrtp		= 1,
+		.avpf		= 1,
 		.tcp		= 0,
 	},
 };
@@ -240,6 +265,8 @@ static const struct streamhandler * const __sh_matrix_in_rtp_avp[__PROTO_LAST] =
 	[PROTO_UDP_TLS_RTP_SAVP]	= &__sh_avp2savp,
 	[PROTO_UDP_TLS_RTP_SAVPF]	= &__sh_avp2savp,
 	[PROTO_UDPTL]			= &__sh_noop,
+	[PROTO_RTP_SAVP_OSRTP]		= &__sh_avp2savp,
+	[PROTO_RTP_SAVPF_OSRTP]		= &__sh_avp2savp,
 };
 static const struct streamhandler * const __sh_matrix_in_rtp_avpf[__PROTO_LAST] = {
 	[PROTO_RTP_AVP]			= &__sh_avpf2avp,
@@ -249,6 +276,8 @@ static const struct streamhandler * const __sh_matrix_in_rtp_avpf[__PROTO_LAST] 
 	[PROTO_UDP_TLS_RTP_SAVP]	= &__sh_avpf2savp,
 	[PROTO_UDP_TLS_RTP_SAVPF]	= &__sh_avp2savp,
 	[PROTO_UDPTL]			= &__sh_noop,
+	[PROTO_RTP_SAVP_OSRTP]		= &__sh_avpf2savp,
+	[PROTO_RTP_SAVPF_OSRTP]		= &__sh_avp2savp,
 };
 static const struct streamhandler * const __sh_matrix_in_rtp_savp[__PROTO_LAST] = {
 	[PROTO_RTP_AVP]			= &__sh_savp2avp,
@@ -258,6 +287,8 @@ static const struct streamhandler * const __sh_matrix_in_rtp_savp[__PROTO_LAST] 
 	[PROTO_UDP_TLS_RTP_SAVP]	= &__sh_savp2savp_rtcp_only,
 	[PROTO_UDP_TLS_RTP_SAVPF]	= &__sh_savp2savp_rtcp_only,
 	[PROTO_UDPTL]			= &__sh_noop,
+	[PROTO_RTP_SAVP_OSRTP]		= &__sh_savp2savp_rtcp_only,
+	[PROTO_RTP_SAVPF_OSRTP]		= &__sh_savp2savp_rtcp_only,
 };
 static const struct streamhandler * const __sh_matrix_in_rtp_savpf[__PROTO_LAST] = {
 	[PROTO_RTP_AVP]			= &__sh_savpf2avp,
@@ -267,6 +298,8 @@ static const struct streamhandler * const __sh_matrix_in_rtp_savpf[__PROTO_LAST]
 	[PROTO_UDP_TLS_RTP_SAVP]	= &__sh_savpf2savp,
 	[PROTO_UDP_TLS_RTP_SAVPF]	= &__sh_savp2savp_rtcp_only,
 	[PROTO_UDPTL]			= &__sh_noop,
+	[PROTO_RTP_SAVP_OSRTP]		= &__sh_savpf2savp,
+	[PROTO_RTP_SAVPF_OSRTP]		= &__sh_savp2savp_rtcp_only,
 };
 static const struct streamhandler * const __sh_matrix_in_rtp_savp_recrypt[__PROTO_LAST] = {
 	[PROTO_RTP_AVP]			= &__sh_savp2avp,
@@ -276,6 +309,8 @@ static const struct streamhandler * const __sh_matrix_in_rtp_savp_recrypt[__PROT
 	[PROTO_UDP_TLS_RTP_SAVP]	= &__sh_savp2savp,
 	[PROTO_UDP_TLS_RTP_SAVPF]	= &__sh_savp2savp,
 	[PROTO_UDPTL]			= &__sh_noop,
+	[PROTO_RTP_SAVP_OSRTP]		= &__sh_savp2savp,
+	[PROTO_RTP_SAVPF_OSRTP]		= &__sh_savp2savp,
 };
 static const struct streamhandler * const __sh_matrix_in_rtp_savpf_recrypt[__PROTO_LAST] = {
 	[PROTO_RTP_AVP]			= &__sh_savpf2avp,
@@ -285,6 +320,8 @@ static const struct streamhandler * const __sh_matrix_in_rtp_savpf_recrypt[__PRO
 	[PROTO_UDP_TLS_RTP_SAVP]	= &__sh_savpf2savp,
 	[PROTO_UDP_TLS_RTP_SAVPF]	= &__sh_savp2savp,
 	[PROTO_UDPTL]			= &__sh_noop,
+	[PROTO_RTP_SAVP_OSRTP]		= &__sh_savpf2savp,
+	[PROTO_RTP_SAVPF_OSRTP]		= &__sh_savp2savp,
 };
 static const struct streamhandler * const __sh_matrix_noop[__PROTO_LAST] = { // non-RTP protocols
 	[PROTO_RTP_AVP]			= &__sh_noop,
@@ -294,6 +331,8 @@ static const struct streamhandler * const __sh_matrix_noop[__PROTO_LAST] = { // 
 	[PROTO_UDP_TLS_RTP_SAVP]	= &__sh_noop,
 	[PROTO_UDP_TLS_RTP_SAVPF]	= &__sh_noop,
 	[PROTO_UDPTL]			= &__sh_noop,
+	[PROTO_RTP_SAVP_OSRTP]		= &__sh_noop,
+	[PROTO_RTP_SAVPF_OSRTP]		= &__sh_noop,
 };
 
 /* ********** */
@@ -306,6 +345,8 @@ static const struct streamhandler * const * const __sh_matrix[__PROTO_LAST] = {
 	[PROTO_UDP_TLS_RTP_SAVP]	= __sh_matrix_in_rtp_savp,
 	[PROTO_UDP_TLS_RTP_SAVPF]	= __sh_matrix_in_rtp_savpf,
 	[PROTO_UDPTL]			= __sh_matrix_noop,
+	[PROTO_RTP_SAVP_OSRTP]		= __sh_matrix_in_rtp_savp,
+	[PROTO_RTP_SAVPF_OSRTP]		= __sh_matrix_in_rtp_savpf,
 };
 /* special case for DTLS as we can't pass through SRTP<>SRTP */
 static const struct streamhandler * const * const __sh_matrix_recrypt[__PROTO_LAST] = {
@@ -316,6 +357,8 @@ static const struct streamhandler * const * const __sh_matrix_recrypt[__PROTO_LA
 	[PROTO_UDP_TLS_RTP_SAVP]	= __sh_matrix_in_rtp_savp_recrypt,
 	[PROTO_UDP_TLS_RTP_SAVPF]	= __sh_matrix_in_rtp_savpf_recrypt,
 	[PROTO_UDPTL]			= __sh_matrix_noop,
+	[PROTO_RTP_SAVP_OSRTP]		= __sh_matrix_in_rtp_savp_recrypt,
+	[PROTO_RTP_SAVPF_OSRTP]		= __sh_matrix_in_rtp_savpf_recrypt,
 };
 
 /* ********** */
@@ -757,7 +800,10 @@ static void release_port(socket_t *r, struct intf_spec *spec) {
 		g_atomic_int_inc(&pp->free_ports);
 		if ((port & 1) == 0) {
 			mutex_lock(&pp->free_list_lock);
-			g_queue_push_tail(&pp->free_list, GUINT_TO_POINTER(port));
+			if (!bit_array_isset(pp->free_list_used, port)) {
+				g_queue_push_tail(&pp->free_list, GUINT_TO_POINTER(port));
+				bit_array_set(pp->free_list_used, port);
+			}
 			mutex_unlock(&pp->free_list_lock);
 		}
 	} else {
@@ -804,6 +850,8 @@ int __get_consecutive_ports(GQueue *out, unsigned int num_ports, unsigned int wa
 		__C_DBG("port %d is USED in port pool", port);
 		mutex_lock(&pp->free_list_lock);
 		unsigned int fport = GPOINTER_TO_UINT(g_queue_pop_head(&pp->free_list));
+		if (fport)
+			bit_array_clear(pp->free_list_used, fport);
 		mutex_unlock(&pp->free_list_lock);
 		if (fport) {
 			port = fport;
@@ -1020,6 +1068,8 @@ void kernelize(struct packet_stream *stream) {
 	struct call *call = stream->call;
 	struct packet_stream *sink = NULL;
 	const char *nk_warn_msg;
+	int non_forwarding = 0;
+	struct call_media *media = stream->media;
 
 	if (PS_ISSET(stream, KERNELIZED))
 		return;
@@ -1030,21 +1080,31 @@ void kernelize(struct packet_stream *stream) {
 	nk_warn_msg = "interface to kernel module not open";
 	if (!kernel.is_open)
 		goto no_kernel_warn;
-	if (!PS_ISSET(stream, RTP))
+	if (!PS_ISSET(stream, RTP)) {
+		if (PS_ISSET(stream, RTCP) && PS_ISSET(stream, STRICT_SOURCE))
+			non_forwarding = 1; // use the kernel's source checking capability
+		else
+			goto no_kernel;
+	}
+	if (MEDIA_ISSET(media, GENERATOR))
 		goto no_kernel;
 	if (!stream->selected_sfd)
 		goto no_kernel;
-	if (stream->media->monologue->block_media || call->block_media)
+	if (media->monologue->block_media || call->block_media)
+		goto no_kernel;
+	if (!stream->endpoint.address.family)
 		goto no_kernel;
 
-        ilog(LOG_INFO, "Kernelizing media stream: %s%s%s:%s%d%s",
-			FMT_M(sockaddr_print_buf(&stream->endpoint.address)), FMT_M(stream->endpoint.port));
+        ilog(LOG_INFO, "Kernelizing media stream: %s%s:%d%s",
+			FMT_M(sockaddr_print_buf(&stream->endpoint.address), stream->endpoint.port));
 
 	sink = packet_stream_sink(stream);
 	if (!sink) {
 		ilog(LOG_WARNING, "Attempt to kernelize stream without sink");
 		goto no_kernel;
 	}
+	if (!sink->endpoint.address.family)
+		goto no_kernel;
 
 	__determine_handler(stream, sink);
 
@@ -1072,15 +1132,16 @@ void kernelize(struct packet_stream *stream) {
 
 	__re_address_translate_ep(&reti.local, &stream->selected_sfd->socket.local);
 	reti.tos = call->tos;
-	reti.rtcp_mux = MEDIA_ISSET(stream->media, RTCP_MUX);
-	reti.dtls = MEDIA_ISSET(stream->media, DTLS);
-	reti.stun = stream->media->ice_agent ? 1 : 0;
+	reti.rtcp_mux = MEDIA_ISSET(media, RTCP_MUX);
+	reti.dtls = MEDIA_ISSET(media, DTLS);
+	reti.stun = media->ice_agent ? 1 : 0;
+	reti.non_forwarding = non_forwarding;
 
 	__re_address_translate_ep(&reti.dst_addr, &sink->endpoint);
 	__re_address_translate_ep(&reti.src_addr, &sink->selected_sfd->socket.local);
 	if (stream->ssrc_in) {
 		reti.ssrc = htonl(stream->ssrc_in->parent->h.ssrc);
-		if (MEDIA_ISSET(stream->media, TRANSCODE)) {
+		if (MEDIA_ISSET(media, TRANSCODE)) {
 			reti.ssrc_out = htonl(stream->ssrc_in->ssrc_map_out);
 			reti.transcoding = 1;
 		}
@@ -1100,7 +1161,7 @@ void kernelize(struct packet_stream *stream) {
 
 	ZERO(stream->kernel_stats);
 
-	if (stream->media->protocol && stream->media->protocol->rtp) {
+	if (proto_is_rtp(media->protocol)) {
 		GList *values, *l;
 		struct rtp_stats *rs;
 
@@ -1114,12 +1175,16 @@ void kernelize(struct packet_stream *stream) {
 			}
 			rs = l->data;
 			// only add payload types that are passthrough
-			struct codec_handler *ch = codec_handler_get(stream->media, rs->payload_type);
+			struct codec_handler *ch = codec_handler_get(media, rs->payload_type);
 			if (!ch->kernelize)
 				continue;
 			reti.payload_types[reti.num_payload_types++] = rs->payload_type;
 		}
 		g_list_free(values);
+	}
+	else {
+		if (MEDIA_ISSET(media, TRANSCODE))
+			goto no_kernel;
 	}
 
 	recording_stream_kernel_info(stream, &reti);
@@ -1156,7 +1221,8 @@ void __unkernelize(struct packet_stream *p) {
 
 void __stream_unconfirm(struct packet_stream *ps) {
 	__unkernelize(ps);
-	PS_CLEAR(ps, CONFIRMED);
+	if (!MEDIA_ISSET(ps->media, ASYMMETRIC))
+		PS_CLEAR(ps, CONFIRMED);
 	ps->handler = NULL;
 }
 static void stream_unconfirm(struct packet_stream *ps) {
@@ -1177,8 +1243,9 @@ void unkernelize(struct packet_stream *ps) {
 
 
 const struct streamhandler *determine_handler(const struct transport_protocol *in_proto,
-		const struct transport_protocol *out_proto, int must_recrypt)
+		struct call_media *out_media, int must_recrypt)
 {
+	const struct transport_protocol *out_proto = out_media->protocol;
 	const struct streamhandler * const *sh_pp, *sh;
 	const struct streamhandler * const * const *matrix;
 
@@ -1189,7 +1256,15 @@ const struct streamhandler *determine_handler(const struct transport_protocol *i
 	sh_pp = matrix[in_proto->index];
 	if (!sh_pp)
 		goto err;
-	sh = sh_pp[out_proto->index];
+
+	// special handling for RTP/AVP with advertised a=rtcp-fb
+	int out_proto_idx = out_proto->index;
+	if (out_media && MEDIA_ISSET(out_media, RTCP_FB)) {
+		if (!out_proto->avpf && out_proto->avpf_proto)
+			out_proto_idx = out_proto->avpf_proto;
+	}
+	sh = sh_pp[out_proto_idx];
+
 	if (!sh)
 		goto err;
 	return sh;
@@ -1219,6 +1294,8 @@ static void __determine_handler(struct packet_stream *in, const struct packet_st
 
 	if (MEDIA_ISSET(in->media, DTLS) || MEDIA_ISSET(out->media, DTLS))
 		must_recrypt = 1;
+	else if (MEDIA_ISSET(in->media, TRANSCODE) || MEDIA_ISSET(out->media, TRANSCODE))
+		must_recrypt = 1;
 	else if (in->call->recording)
 		must_recrypt = 1;
 	else if (in_proto->srtp && out_proto->srtp
@@ -1227,7 +1304,7 @@ static void __determine_handler(struct packet_stream *in, const struct packet_st
 				|| crypto_params_cmp(&out->crypto.params, &in->selected_sfd->crypto.params)))
 		must_recrypt = 1;
 
-	in->handler = determine_handler(in_proto, out_proto, must_recrypt);
+	in->handler = determine_handler(in_proto, out->media, must_recrypt);
 	return;
 
 err:
@@ -1249,17 +1326,14 @@ static void __stream_ssrc(struct packet_stream *in_srtp, struct packet_stream *o
 	mutex_lock(&in_srtp->in_lock);
 
 	(*ssrc_in_p) = in_srtp->ssrc_in;
-	if (*ssrc_in_p)
-		obj_hold(&(*ssrc_in_p)->parent->h);
+	ssrc_ctx_hold(*ssrc_in_p);
 	if (G_UNLIKELY(!(*ssrc_in_p) || (*ssrc_in_p)->parent->h.ssrc != in_ssrc)) {
 		// SSRC mismatch - get the new entry
-		if (*ssrc_in_p)
-			obj_put(&(*ssrc_in_p)->parent->h);
-		if (in_srtp->ssrc_in)
-			obj_put(&in_srtp->ssrc_in->parent->h);
+		ssrc_ctx_put(ssrc_in_p);
+		ssrc_ctx_put(&in_srtp->ssrc_in);
 		(*ssrc_in_p) = in_srtp->ssrc_in =
-			get_ssrc_ctx(in_ssrc, ssrc_hash, SSRC_DIR_INPUT);
-		obj_hold(&in_srtp->ssrc_in->parent->h);
+			get_ssrc_ctx(in_ssrc, ssrc_hash, SSRC_DIR_INPUT, in_srtp->media->monologue);
+		ssrc_ctx_hold(in_srtp->ssrc_in);
 
 		// might have created a new entry, which would have a new random
 		// ssrc_map_out. we don't need this if we're not transcoding
@@ -1274,17 +1348,14 @@ static void __stream_ssrc(struct packet_stream *in_srtp, struct packet_stream *o
 	mutex_lock(&out_srtp->out_lock);
 
 	(*ssrc_out_p) = out_srtp->ssrc_out;
-	if (*ssrc_out_p)
-		obj_hold(&(*ssrc_out_p)->parent->h);
+	ssrc_ctx_hold(*ssrc_out_p);
 	if (G_UNLIKELY(!(*ssrc_out_p) || (*ssrc_out_p)->parent->h.ssrc != out_ssrc)) {
 		// SSRC mismatch - get the new entry
-		if (*ssrc_out_p)
-			obj_put(&(*ssrc_out_p)->parent->h);
-		if (out_srtp->ssrc_out)
-			obj_put(&out_srtp->ssrc_out->parent->h);
+		ssrc_ctx_put(ssrc_out_p);
+		ssrc_ctx_put(&out_srtp->ssrc_out);
 		(*ssrc_out_p) = out_srtp->ssrc_out =
-			get_ssrc_ctx(out_ssrc, ssrc_hash, SSRC_DIR_OUTPUT);
-		obj_hold(&out_srtp->ssrc_out->parent->h);
+			get_ssrc_ctx(out_ssrc, ssrc_hash, SSRC_DIR_OUTPUT, out_srtp->media->monologue);
+		ssrc_ctx_hold(out_srtp->ssrc_out);
 
 		// reverse SSRC mapping
 		(*ssrc_out_p)->ssrc_map_out = in_ssrc;
@@ -1294,7 +1365,8 @@ static void __stream_ssrc(struct packet_stream *in_srtp, struct packet_stream *o
 }
 
 
-// returns: 0 = packet processed by other protocol hander; -1 = packet not handled, proceed;
+// returns: 0 = packet processed by other protocol handler;
+// -1 = packet not handled, proceed;
 // 1 = same as 0, but stream can be kernelized
 static int media_demux_protocols(struct packet_handler_ctx *phc) {
 	if (MEDIA_ISSET(phc->mp.media, DTLS) && is_dtls(&phc->s)) {
@@ -1387,9 +1459,7 @@ static void media_packet_rtp(struct packet_handler_ctx *phc)
 {
 	phc->payload_type = -1;
 
-	if (G_UNLIKELY(!phc->mp.media->protocol))
-		return;
-	if (G_UNLIKELY(!phc->mp.media->protocol->rtp))
+	if (G_UNLIKELY(!proto_is_rtp(phc->mp.media->protocol)))
 		return;
 
 	if (G_LIKELY(!phc->rtcp && !rtp_payload(&phc->mp.rtp, &phc->mp.payload, &phc->s))) {
@@ -1445,13 +1515,13 @@ static int media_packet_decrypt(struct packet_handler_ctx *phc)
 		phc->rtcp_filter = phc->in_srtp->handler->in->rtcp_filter;
 	}
 
-	/* return values are: 0 = forward packet, -1 = error/dont forward,
+	/* return values are: 0 = forward packet, -1 = error/don't forward,
 	 * 1 = forward and push update to redis */
 	int ret = 0;
 	if (phc->decrypt_func) {
 		str ori_s = phc->s;
 		ret = phc->decrypt_func(&phc->s, phc->in_srtp, phc->mp.sfd, &phc->mp.fsin, &phc->mp.tv, phc->mp.ssrc_in);
-		// XXX for stripped auth tag and duplicate invokations of rtp_payload
+		// XXX for stripped auth tag and duplicate invocations of rtp_payload
 		// XXX transcoder uses phc->mp.payload
 		phc->mp.payload.len -= ori_s.len - phc->s.len;
 	}
@@ -1513,8 +1583,20 @@ static int media_packet_address_check(struct packet_handler_ctx *phc)
 		goto out;
 	}
 
+	// GH #697 - apparent Asterisk bug where it sends stray RTCP to the RTP port.
+	// work around this by detecting this situation and ignoring the packet for
+	// confirmation purposes when needed. This is regardless of whether rtcp-mux
+	// is enabled or not.
+	if (!PS_ISSET(phc->mp.stream, CONFIRMED) && PS_ISSET(phc->mp.stream, RTP)) {
+		if (rtcp_demux_is_rtcp(&phc->s)) {
+			ilog(LOG_DEBUG | LOG_FLAG_LIMIT, "Ignoring stray RTCP packet for "
+					"peer address confirmation purposes");
+			goto out;
+		}
+	}
+
 	/* do not pay attention to source addresses of incoming packets for asymmetric streams */
-	if (MEDIA_ISSET(phc->mp.media, ASYMMETRIC))
+	if (MEDIA_ISSET(phc->mp.media, ASYMMETRIC) || rtpe_config.endpoint_learning == EL_OFF)
 		PS_SET(phc->mp.stream, CONFIRMED);
 
 	/* confirm sink for unidirectional streams in order to kernelize */
@@ -1531,7 +1613,7 @@ static int media_packet_address_check(struct packet_handler_ctx *phc)
 			int tmp = memcmp(&endpoint, &phc->mp.stream->endpoint, sizeof(endpoint));
 			if (tmp && PS_ISSET(phc->mp.stream, MEDIA_HANDOVER)) {
 				/* out_lock remains locked */
-				ilog(LOG_INFO, "Peer address changed to %s%s%s",
+				ilog(LOG_INFO | LOG_FLAG_LIMIT, "Peer address changed to %s%s%s",
 						FMT_M(endpoint_print_buf(&phc->mp.fsin)));
 				phc->unkernelize = 1;
 				phc->update = 1;
@@ -1542,18 +1624,53 @@ static int media_packet_address_check(struct packet_handler_ctx *phc)
 			mutex_unlock(&phc->mp.stream->out_lock);
 
 			if (tmp && PS_ISSET(phc->mp.stream, STRICT_SOURCE)) {
-				ilog(LOG_INFO, "Drop due to strict-source attribute; got %s%s%s:%s%d%s, "
-						"expected %s%s%s:%s%d%s",
-					FMT_M(sockaddr_print_buf(&endpoint.address)), FMT_M(endpoint.port),
-					FMT_M(sockaddr_print_buf(&phc->mp.stream->endpoint.address)),
-					FMT_M(phc->mp.stream->endpoint.port));
+				ilog(LOG_INFO | LOG_FLAG_LIMIT, "Drop due to strict-source attribute; "
+						"got %s%s:%d%s, "
+						"expected %s%s:%d%s",
+					FMT_M(sockaddr_print_buf(&endpoint.address), endpoint.port),
+					FMT_M(sockaddr_print_buf(&phc->mp.stream->endpoint.address),
+					phc->mp.stream->endpoint.port));
 				atomic64_inc(&phc->mp.stream->stats.errors);
 				ret = -1;
-				goto out;
 			}
 		}
 		phc->kernelize = 1;
 		goto out;
+	}
+
+	const struct endpoint *use_endpoint_confirm = &phc->mp.fsin;
+
+	if (rtpe_config.endpoint_learning == EL_IMMEDIATE)
+		goto confirm_now;
+
+	if (rtpe_config.endpoint_learning == EL_HEURISTIC
+			&& phc->mp.stream->advertised_endpoint.address.family
+			&& phc->mp.stream->advertised_endpoint.port)
+	{
+		// possible endpoints that can be detected in order of preference:
+		// 0: endpoint that matches the address advertised in the SDP
+		// 1: endpoint with the same address but different port
+		// 2: endpoint with the same port but different address
+		// 3: endpoint with both different port and different address
+		unsigned int idx = 0;
+		if (phc->mp.fsin.port != phc->mp.stream->advertised_endpoint.port)
+			idx |= 1;
+		if (memcmp(&phc->mp.fsin.address, &phc->mp.stream->advertised_endpoint.address,
+					sizeof(sockaddr_t)))
+			idx |= 2;
+
+		// fill appropriate slot
+		phc->mp.stream->detected_endpoints[idx] = phc->mp.fsin;
+
+		// now grab the best matched endpoint
+		for (idx = 0; idx < 4; idx++) {
+			use_endpoint_confirm = &phc->mp.stream->detected_endpoints[idx];
+			if (use_endpoint_confirm->address.family) {
+				if (idx == 0) // doesn't get any better than this
+					goto confirm_now;
+				break;
+			}
+		}
 	}
 
 	/* wait at least 3 seconds after last signal before committing to a particular
@@ -1561,17 +1678,18 @@ static int media_packet_address_check(struct packet_handler_ctx *phc)
 	if (!phc->mp.call->last_signal || rtpe_now.tv_sec <= phc->mp.call->last_signal + 3)
 		goto update_peerinfo;
 
+confirm_now:
 	phc->kernelize = 1;
 	phc->update = 1;
 
-	ilog(LOG_INFO, "Confirmed peer address as %s%s%s", FMT_M(endpoint_print_buf(&phc->mp.fsin)));
+	ilog(LOG_INFO, "Confirmed peer address as %s%s%s", FMT_M(endpoint_print_buf(use_endpoint_confirm)));
 
 	PS_SET(phc->mp.stream, CONFIRMED);
 
 update_peerinfo:
 	mutex_lock(&phc->mp.stream->out_lock);
 	endpoint = phc->mp.stream->endpoint;
-	phc->mp.stream->endpoint = phc->mp.fsin;
+	phc->mp.stream->endpoint = *use_endpoint_confirm;
 	if (memcmp(&endpoint, &phc->mp.stream->endpoint, sizeof(endpoint))) {
 		phc->unkernelize = 1;
 		phc->update = 1;
@@ -1612,6 +1730,9 @@ static void media_packet_kernel_check(struct packet_handler_ctx *phc) {
 				phc->mp.stream->endpoint.port);
 		return;
 	}
+
+	if (MEDIA_ISSET(phc->sink->media, ASYMMETRIC))
+		PS_SET(phc->sink, CONFIRMED);
 
 	if (!PS_ISSET(phc->sink, CONFIRMED)) {
 		__C_DBG("sink not CONFIRMED for stream %s:%d",
@@ -1655,10 +1776,12 @@ out:
 // appropriate locks must be held
 int media_socket_dequeue(struct media_packet *mp, struct packet_stream *sink) {
 	struct codec_packet *p;
-
-	while ((p = g_queue_pop_head(&mp->packets_out)))
-		send_timer_push(sink->send_timer, p);
-
+	while ((p = g_queue_pop_head(&mp->packets_out))) {
+		if (sink->send_timer)
+			send_timer_push(sink->send_timer, p);
+		else
+			codec_packet_free(p);
+	}
 	return 0;
 }
 
@@ -1694,7 +1817,6 @@ static int stream_packet(struct packet_handler_ctx *phc, struct packet_stream *s
 	phc->mp.stream = phc->mp.sfd->stream;
 	if (G_UNLIKELY(!phc->mp.stream))
 		goto out;
-
 	__C_DBG("Handling packet on: %s:%d", sockaddr_print_buf(&phc->mp.stream->endpoint.address),
 			phc->mp.stream->endpoint.port);
 
@@ -1703,6 +1825,9 @@ static int stream_packet(struct packet_handler_ctx *phc, struct packet_stream *s
 	if (!phc->mp.stream->selected_sfd)
 		goto out;
 
+	if (phc->mp.call && phc->mp.call->drop_traffic) {
+		goto drop;
+	}
 
 	int stun_ret = media_demux_protocols(phc);
 	if (stun_ret == 0) // packet processed
@@ -1727,13 +1852,32 @@ static int stream_packet(struct packet_handler_ctx *phc, struct packet_stream *s
 	// this set payload_type, ssrc_in, ssrc_out and mp
 	media_packet_rtp(phc);
 
+	// SSRC receive stats
+	if (phc->mp.ssrc_in && phc->mp.rtp) {
+		atomic64_inc(&phc->mp.ssrc_in->packets);
+		atomic64_add(&phc->mp.ssrc_in->packets, phc->mp.raw.len);
+		// no real sequencing, so this is rudimentary
+		uint64_t old_seq = atomic64_get(&phc->mp.ssrc_in->last_seq);
+		uint64_t new_seq = ntohs(phc->mp.rtp->seq_num) | (old_seq & 0xffff0000UL);
+		// XXX combine this with similar code elsewhere
+		long seq_diff = new_seq - old_seq;
+		while (seq_diff < -60000) {
+			new_seq += 0x10000;
+			seq_diff += 0x10000;
+		}
+		if (seq_diff > 0 || seq_diff < -10) {
+			atomic64_set(&phc->mp.ssrc_in->last_seq, new_seq);
+			atomic64_set(&phc->mp.ssrc_in->last_ts, ntohl(phc->mp.rtp->timestamp));
+		}
+	}
+
 
 	/* do we have somewhere to forward it to? */
 
 	if (G_UNLIKELY(!phc->sink || !phc->sink->selected_sfd || !phc->out_srtp
 				|| !phc->out_srtp->selected_sfd || !phc->in_srtp->selected_sfd))
 	{
-		ilog(LOG_WARNING, "RTP packet from %s%s%s discarded", FMT_M(endpoint_print_buf(&phc->mp.fsin)));
+		ilog(LOG_WARNING, "Media packet from %s%s%s discarded", FMT_M(endpoint_print_buf(&phc->mp.fsin)));
 		atomic64_inc(&phc->mp.stream->stats.errors);
 		atomic64_inc(&rtpe_statsps.errors);
 		goto out;
@@ -1769,12 +1913,10 @@ static int stream_packet(struct packet_handler_ctx *phc, struct packet_stream *s
 
 
 	int address_check = media_packet_address_check(phc);
-	if (address_check)
-		goto drop;
-
 	if (phc->kernelize)
 		media_packet_kernel_check(phc);
-
+	if (address_check)
+		goto drop;
 
 	mutex_lock(&phc->sink->out_lock);
 
@@ -1801,7 +1943,7 @@ static int stream_packet(struct packet_handler_ctx *phc, struct packet_stream *s
 
 	if (ret == -1) {
 		ret = -errno;
-                ilog(LOG_DEBUG,"Error when sending message. Error: %s",strerror(errno));
+        ilog(LOG_DEBUG,"Error when sending message. Error: %s",strerror(errno));
 		atomic64_inc(&phc->mp.stream->stats.errors);
 		atomic64_inc(&rtpe_statsps.errors);
 		goto out;
@@ -1827,14 +1969,8 @@ out:
 
 	g_queue_clear_full(&phc->mp.packets_out, codec_packet_free);
 
-	if (phc->mp.ssrc_in) {
-		obj_put(&phc->mp.ssrc_in->parent->h);
-		phc->mp.ssrc_in = NULL;
-	}
-	if (phc->mp.ssrc_out) {
-		obj_put(&phc->mp.ssrc_out->parent->h);
-		phc->mp.ssrc_out = NULL;
-	}
+	ssrc_ctx_put(&phc->mp.ssrc_in);
+	ssrc_ctx_put(&phc->mp.ssrc_out);
 
 	return ret;
 }
@@ -1861,7 +1997,7 @@ static void stream_fd_readable(int fd, void *p, uintptr_t u) {
 	m = sfd->stream->media;
 
 	for (iters = 0; ; iters++) {
-        int fm_present = 0;
+        int fm_present = 0, stream_now = 1;
 #if MAX_RECV_ITERS
 		if (iters >= MAX_RECV_ITERS) {
 			ilog(LOG_ERROR, "Too many packets in UDP receive queue (more than %d), "
@@ -1907,15 +2043,27 @@ static void stream_fd_readable(int fd, void *p, uintptr_t u) {
 		}
 
 		str_init_len(&phc.s, buf + RTP_BUFFER_HEAD_ROOM, ret);
-		ret = stream_packet(&phc, sfd->stream->rtp_sink);
+
+		if (sfd->stream && sfd->stream->jb) {
+			ret = buffer_packet(&phc.mp, &phc.s);
+			if (ret == 1)
+				ret = stream_packet(&phc, sfd->stream->rtp_sink);
+			else
+				stream_now = 0;
+		}
+		else
+			ret = stream_packet(&phc, sfd->stream->rtp_sink);
+
 		if (G_UNLIKELY(ret < 0))
 			ilog(LOG_WARNING, "Write error on media socket: %s", strerror(-ret));
 		else if (phc.update)
 			update = 1;
 
-    	if (m->monologue->forked_dialogue && fm_present) {
+    	if (m->monologue->forked_dialogue && fm_present && stream_now) {
 			str_init_len(&phc.s, dupbuf + RTP_BUFFER_HEAD_ROOM, ret1);
+
 			ret = stream_packet(&phc, fps);
+
 			if (G_UNLIKELY(ret < 0))
 				ilog(LOG_WARNING, "Write error on media socket: %s", strerror(-ret));
 			else if (phc.update)
@@ -1988,4 +2136,14 @@ const struct transport_protocol *transport_protocol(const str *s) {
 
 out:
 	return NULL;
+}
+
+void play_buffered(struct jb_packet *cp) {
+	struct packet_handler_ctx phc;
+	ZERO(phc);
+	phc.mp = cp->mp;
+	phc.s = cp->mp.raw;
+	//phc.buffered_packet = buffered;
+	stream_packet(&phc, phc.mp.stream->rtp_sink);
+	jb_packet_free(&cp);
 }

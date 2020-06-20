@@ -15,6 +15,7 @@
 #include "ssrc.h"
 #include "log_funcs.h"
 #include "main.h"
+#include "rtcp.h"
 
 
 
@@ -25,32 +26,24 @@
 #ifdef WITH_TRANSCODING
 static struct timerthread media_player_thread;
 static MYSQL __thread *mysql_conn;
+
+static void media_player_read_packet(struct media_player *mp);
 #endif
+
 static struct timerthread send_timer_thread;
+
+
+
+static void send_timer_send_nolock(struct send_timer *st, struct codec_packet *cp);
+static void send_timer_send_lock(struct send_timer *st, struct codec_packet *cp);
+
 
 
 
 #ifdef WITH_TRANSCODING
 // called with call->master lock in W
 static unsigned int send_timer_flush(struct send_timer *st, void *ptr) {
-	if (!st)
-		return 0;
-
-	unsigned int num = 0;
-	GList *l = st->packets.head;
-	while (l) {
-		GList *next = l->next;
-		struct codec_packet *p = l->data;
-		if (p->source != ptr)
-			goto next;
-		g_queue_delete_link(&st->packets, l);
-		codec_packet_free(p);
-		num++;
-
-next:
-		l = next;
-	}
-	return num;
+	return timerthread_queue_flush(&st->ttq, ptr);
 }
 
 
@@ -61,6 +54,7 @@ static void media_player_shutdown(struct media_player *mp) {
 
 	ilog(LOG_DEBUG, "shutting down media_player");
 	timerthread_obj_deschedule(&mp->tt_obj);
+	mp->next_run.tv_sec = 0;
 	avformat_close_input(&mp->fmtctx);
 
 	if (mp->sink) {
@@ -71,9 +65,7 @@ static void media_player_shutdown(struct media_player *mp) {
 	}
 
 	mp->media = NULL;
-	if (mp->handler)
-		codec_handler_free(mp->handler);
-	mp->handler = NULL;
+	codec_handler_free(&mp->handler);
 	if (mp->avioctx) {
 		if (mp->avioctx->buffer)
 			av_freep(&mp->avioctx->buffer);
@@ -101,9 +93,7 @@ static void __media_player_free(void *p) {
 	ilog(LOG_DEBUG, "freeing media_player");
 
 	media_player_shutdown(mp);
-	if (mp->ssrc_out)
-		obj_put(&mp->ssrc_out->parent->h);
-	mp->ssrc_out = NULL;
+	ssrc_ctx_put(&mp->ssrc_out);
 	mutex_destroy(&mp->lock);
 	obj_put(mp->call);
 }
@@ -118,12 +108,14 @@ struct media_player *media_player_new(struct call_monologue *ml) {
 	uint32_t ssrc = 0;
 	while (ssrc == 0)
 		ssrc = random();
-	struct ssrc_ctx *ssrc_ctx = get_ssrc_ctx(ssrc, ml->call->ssrc_hash, SSRC_DIR_OUTPUT);
+	struct ssrc_ctx *ssrc_ctx = get_ssrc_ctx(ssrc, ml->call->ssrc_hash, SSRC_DIR_OUTPUT, ml);
+	ssrc_ctx->next_rtcp = rtpe_now;
 
 	struct media_player *mp = obj_alloc0("media_player", sizeof(*mp), __media_player_free);
 
 	mp->tt_obj.tt = &media_player_thread;
 	mutex_init(&mp->lock);
+	mp->run_func = media_player_read_packet; // default
 	mp->call = obj_get(ml->call);
 	mp->ml = ml;
 	mp->seq = random();
@@ -145,81 +137,199 @@ static void __send_timer_free(void *p) {
 
 	ilog(LOG_DEBUG, "freeing send_timer");
 
-	g_queue_clear_full(&st->packets, codec_packet_free);
-	mutex_destroy(&st->lock);
 	obj_put(st->call);
 }
 
+
+static void __send_timer_send_now(struct timerthread_queue *ttq, void *p) {
+	send_timer_send_nolock((void *) ttq, p);
+};
+static void __send_timer_send_later(struct timerthread_queue *ttq, void *p) {
+	send_timer_send_lock((void *) ttq, p);
+};
 
 // call->master_lock held in W
 struct send_timer *send_timer_new(struct packet_stream *ps) {
 	ilog(LOG_DEBUG, "creating send_timer");
 
-	struct send_timer *st = obj_alloc0("send_timer", sizeof(*st), __send_timer_free);
-	st->tt_obj.tt = &send_timer_thread;
-	mutex_init(&st->lock);
+	struct send_timer *st = timerthread_queue_new("send_timer", sizeof(*st),
+			&send_timer_thread,
+			__send_timer_send_now,
+			__send_timer_send_later,
+			__send_timer_free, codec_packet_free);
 	st->call = obj_get(ps->call);
 	st->sink = ps;
-	g_queue_init(&st->packets);
 
 	return st;
 }
 
 
-// st->stream->out_lock (or call->master_lock/W) must be held already
-static int send_timer_send(struct send_timer *st, struct codec_packet *cp) {
-	if (cp->to_send.tv_sec && timeval_cmp(&cp->to_send, &rtpe_now) > 0)
-		return -1; // not yet
+// call is locked in R
+static void send_timer_send_rtcp(struct ssrc_ctx *ssrc_out, struct call *call, struct packet_stream *ps) {
+	GQueue rrs = G_QUEUE_INIT;
+	rtcp_receiver_reports(&rrs, call->ssrc_hash, ps->media->monologue);
 
+	ilog(LOG_DEBUG, "Generating and sending RTCP SR for %x and up to %i source(s)",
+			ssrc_out->parent->h.ssrc, rrs.length);
+
+	GString *sr = rtcp_sender_report(ssrc_out->parent->h.ssrc,
+			atomic64_get(&ssrc_out->last_ts),
+			atomic64_get(&ssrc_out->packets),
+			atomic64_get(&ssrc_out->octets),
+			&rrs);
+
+	socket_sendto(&ps->selected_sfd->socket, sr->str, sr->len, &ps->endpoint);
+	g_string_free(sr, TRUE);
+}
+
+// call is locked in R
+static void send_timer_rtcp(struct send_timer *st, struct ssrc_ctx *ssrc_out) {
+	struct call_media *media = st->sink ? st->sink->media : NULL;
+	if (!media)
+		return;
+	struct call *call = media->call;
+
+	// figure out where to send it
+	struct packet_stream *ps = media->streams.head->data;
+	if (MEDIA_ISSET(media, RTCP_MUX))
+		;
+	else if (!media->streams.head->next)
+		;
+	else {
+		struct packet_stream *next_ps = media->streams.head->next->data;
+		if (PS_ISSET(next_ps, RTCP))
+			ps = next_ps;
+	}
+
+	log_info_stream_fd(ps->selected_sfd);
+
+	send_timer_send_rtcp(ssrc_out, call, ps);
+
+	// XXX missing locking?
+	ssrc_out->next_rtcp = rtpe_now;
+	timeval_add_usec(&ssrc_out->next_rtcp, 5000000);
+}
+
+
+static void __send_timer_send_common(struct send_timer *st, struct codec_packet *cp) {
 	if (!st->sink->selected_sfd)
 		goto out;
 
-	struct rtp_header *rh = (void *) cp->s.s;
-	ilog(LOG_DEBUG, "Forward to sink endpoint: %s%s:%d%s (RTP seq %u TS %u)",
-			FMT_M(sockaddr_print_buf(&st->sink->endpoint.address),
-			st->sink->endpoint.port),
-			ntohs(rh->seq_num),
-			ntohl(rh->timestamp));
+	struct rtp_header *rh = cp->rtp;
+	if (rh)
+		ilog(LOG_DEBUG, "Forward to sink endpoint: %s%s:%d%s (RTP seq %u TS %u)",
+				FMT_M(sockaddr_print_buf(&st->sink->endpoint.address),
+				st->sink->endpoint.port),
+				ntohs(rh->seq_num),
+				ntohl(rh->timestamp));
+	else
+		ilog(LOG_DEBUG, "Forward to sink endpoint: %s%s:%d%s",
+				FMT_M(sockaddr_print_buf(&st->sink->endpoint.address),
+				st->sink->endpoint.port));
 
 	socket_sendto(&st->sink->selected_sfd->socket,
 			cp->s.s, cp->s.len, &st->sink->endpoint);
 
+	if (cp->ssrc_out && cp->rtp) {
+		atomic64_inc(&cp->ssrc_out->packets);
+		atomic64_add(&cp->ssrc_out->octets, cp->s.len);
+		if (cp->ts)
+			atomic64_set(&cp->ssrc_out->last_ts, cp->ts);
+		else
+			atomic64_set(&cp->ssrc_out->last_ts, ntohl(cp->rtp->timestamp));
+		payload_tracker_add(&cp->ssrc_out->tracker, cp->rtp->m_pt & 0x7f);
+	}
+
+	// do we send RTCP?
+	struct ssrc_ctx *ssrc_out = cp->ssrc_out;
+	if (ssrc_out && ssrc_out->next_rtcp.tv_sec) {
+		if (timeval_diff(&ssrc_out->next_rtcp, &rtpe_now) < 0)
+			send_timer_rtcp(st, ssrc_out);
+	}
+
 out:
 	codec_packet_free(cp);
+}
 
-	return 0;
+static void send_timer_send_lock(struct send_timer *st, struct codec_packet *cp) {
+	struct call *call = st->call;
+	if (!call)
+		return;
+
+	log_info_call(call);
+	rwlock_lock_r(&call->master_lock);
+
+	__send_timer_send_common(st, cp);
+
+	rwlock_unlock_r(&call->master_lock);
+	log_info_clear();
+
+}
+// st->stream->out_lock (or call->master_lock/W) must be held already
+static void send_timer_send_nolock(struct send_timer *st, struct codec_packet *cp) {
+	struct call *call = st->call;
+	if (!call)
+		return;
+
+	log_info_call(call);
+
+	__send_timer_send_common(st, cp);
+
+	log_info_clear();
 }
 
 
 // st->stream->out_lock (or call->master_lock/W) must be held already
 void send_timer_push(struct send_timer *st, struct codec_packet *cp) {
-	// can we send immediately?
-	if (!send_timer_send(st, cp))
-		return;
-
-	// queue for sending
-
-	struct rtp_header *rh = (void *) cp->s.s;
-	ilog(LOG_DEBUG, "queuing up packet for delivery at %lu.%06u (RTP seq %u TS %u)",
-			(unsigned long) cp->to_send.tv_sec,
-			(unsigned int) cp->to_send.tv_usec,
-			ntohs(rh->seq_num),
-			ntohl(rh->timestamp));
-
-	mutex_lock(&st->lock);
-	unsigned int qlen = st->packets.length;
-	// this hands over ownership of cp, so we must copy the timeval out
-	struct timeval tv_send = cp->to_send;
-	g_queue_push_tail(&st->packets, cp);
-	mutex_unlock(&st->lock);
-
-	// first packet in? we're probably not scheduled yet
-	if (!qlen)
-		timerthread_obj_schedule_abs(&st->tt_obj, &tv_send);
+	timerthread_queue_push(&st->ttq, &cp->ttq_entry);
 }
 
 
 #ifdef WITH_TRANSCODING
+
+
+
+int media_player_setup(struct media_player *mp, const struct rtp_payload_type *src_pt) {
+	// find suitable output payload type
+	struct rtp_payload_type *dst_pt;
+	for (GList *l = mp->media->codecs_prefs_send.head; l; l = l->next) {
+		dst_pt = l->data;
+		ensure_codec_def(dst_pt, mp->media);
+		if (dst_pt->codec_def && !dst_pt->codec_def->supplemental)
+			goto found;
+	}
+	dst_pt = NULL;
+found:
+	if (!dst_pt) {
+		ilog(LOG_ERR, "No supported output codec found in SDP");
+		return -1;
+	}
+	ilog(LOG_DEBUG, "Output codec for media playback is " STR_FORMAT,
+			STR_FMT(&dst_pt->encoding_with_params));
+
+	// if we played anything before, scale our sync TS according to the time
+	// that has passed
+	if (mp->sync_ts_tv.tv_sec) {
+		long long ts_diff_us = timeval_diff(&rtpe_now, &mp->sync_ts_tv);
+		mp->sync_ts += ts_diff_us * dst_pt->clock_rate / 1000000 / dst_pt->codec_def->clockrate_mult;
+	}
+
+	// if we already have a handler, see if anything needs changing
+	if (mp->handler) {
+		if (rtp_payload_type_cmp(&mp->handler->dest_pt, dst_pt)
+				|| rtp_payload_type_cmp(&mp->handler->source_pt, src_pt))
+		{
+			ilog(LOG_DEBUG, "Resetting codec handler for media player");
+			codec_handler_free(&mp->handler);
+		}
+	}
+	if (!mp->handler)
+		mp->handler = codec_handler_make_playback(src_pt, dst_pt, mp->sync_ts);
+	if (!mp->handler)
+		return -1;
+
+	return 0;
+}
 
 #if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(57, 26, 0)
 #define CODECPAR codecpar
@@ -244,31 +354,7 @@ static int __ensure_codec_handler(struct media_player *mp, AVStream *avs) {
 	src_pt.clock_rate = avs->CODECPAR->sample_rate;
 	codec_init_payload_type(&src_pt, mp->media);
 
-	// find suitable output payload type
-	struct rtp_payload_type *dst_pt;
-	for (GList *l = mp->media->codecs_prefs_send.head; l; l = l->next) {
-		dst_pt = l->data;
-		if (dst_pt->codec_def && !dst_pt->codec_def->pseudocodec)
-			goto found;
-	}
-	dst_pt = NULL;
-found:
-	if (!dst_pt) {
-		ilog(LOG_ERR, "No supported output codec found in SDP");
-		return -1;
-	}
-	ilog(LOG_DEBUG, "Output codec for media playback is " STR_FORMAT,
-			STR_FMT(&dst_pt->encoding_with_params));
-
-	// if we played anything before, scale our sync TS according to the time
-	// that has passed
-	if (mp->sync_ts_tv.tv_sec) {
-		long long ts_diff_us = timeval_diff(&rtpe_now, &mp->sync_ts_tv);
-		mp->sync_ts += ts_diff_us * dst_pt->clock_rate / 1000000 / dst_pt->codec_def->clockrate_mult;
-	}
-
-	mp->handler = codec_handler_make_playback(&src_pt, dst_pt, mp->sync_ts);
-	if (!mp->handler)
+	if (media_player_setup(mp, &src_pt))
 		return -1;
 
 	mp->duration = avs->duration * 1000 * avs->time_base.num / avs->time_base.den;
@@ -278,7 +364,58 @@ found:
 
 
 // appropriate lock must be held
+void media_player_add_packet(struct media_player *mp, char *buf, size_t len,
+		long long us_dur, unsigned long long pts)
+{
+	// synthesise fake RTP header and media_packet context
+
+	struct rtp_header rtp = {
+		.timestamp = pts, // taken verbatim by handler_func_playback w/o byte swap
+		.seq_num = htons(mp->seq),
+	};
+	struct media_packet packet = {
+		.tv = rtpe_now,
+		.call = mp->call,
+		.media = mp->media,
+		.rtp = &rtp,
+		.ssrc_out = mp->ssrc_out,
+	};
+	str_init_len(&packet.raw, buf, len);
+	packet.payload = packet.raw;
+
+	mp->handler->func(mp->handler, &packet);
+
+	// as this is timing sensitive and we may have spent some time decoding,
+	// update our global "now" timestamp
+	gettimeofday(&rtpe_now, NULL);
+
+	// keep track of RTP timestamps and real clock. look at the last packet we received
+	// and update our sync TS.
+	if (packet.packets_out.head) {
+		struct codec_packet *p = packet.packets_out.head->data;
+		if (p->rtp) {
+			mp->sync_ts = ntohl(p->rtp->timestamp);
+			mp->sync_ts_tv = p->ttq_entry.when;
+		}
+	}
+
+	media_packet_encrypt(mp->crypt_handler->out->rtp_crypt, mp->sink, &packet);
+
+	mutex_lock(&mp->sink->out_lock);
+	if (media_socket_dequeue(&packet, mp->sink))
+		ilog(LOG_ERR, "Error sending playback media to RTP sink");
+	mutex_unlock(&mp->sink->out_lock);
+
+	timeval_add_usec(&mp->next_run, us_dur);
+	timerthread_obj_schedule_abs(&mp->tt_obj, &mp->next_run);
+}
+
+
+// appropriate lock must be held
 static void media_player_read_packet(struct media_player *mp) {
+	if (!mp->fmtctx)
+		return;
+
 	int ret = av_read_frame(mp->fmtctx, &mp->pkt);
 	if (ret < 0) {
 		if (ret == AVERROR_EOF) {
@@ -321,50 +458,20 @@ static void media_player_read_packet(struct media_player *mp) {
 			avs->CODECPAR->sample_rate,
 			avs->time_base.num, avs->time_base.den);
 
-	// synthesise fake RTP header and media_packet context
-
-	struct rtp_header rtp = {
-		.timestamp = pts_scaled, // taken verbatim by handler_func_playback w/o byte swap
-		.seq_num = htons(mp->seq),
-	};
-	struct media_packet packet = {
-		.tv = rtpe_now,
-		.call = mp->call,
-		.media = mp->media,
-		.rtp = &rtp,
-		.ssrc_out = mp->ssrc_out,
-	};
-	str_init_len(&packet.raw, (char *) mp->pkt.data, mp->pkt.size);
-	packet.payload = packet.raw;
-
-	mp->handler->func(mp->handler, &packet);
-
-	// as this is timing sensitive and we may have spent some time decoding,
-	// update our global "now" timestamp
-	gettimeofday(&rtpe_now, NULL);
-
-	// keep track of RTP timestamps and real clock. look at the last packet we received
-	// and update our sync TS.
-	if (packet.packets_out.head) {
-		struct codec_packet *p = packet.packets_out.head->data;
-		if (p->rtp) {
-			mp->sync_ts = ntohl(p->rtp->timestamp);
-			mp->sync_ts_tv = p->to_send;
-		}
-	}
-
-	media_packet_encrypt(mp->crypt_handler->out->rtp_crypt, mp->sink, &packet);
-
-	mutex_lock(&mp->sink->out_lock);
-	if (media_socket_dequeue(&packet, mp->sink))
-		ilog(LOG_ERR, "Error sending playback media to RTP sink");
-	mutex_unlock(&mp->sink->out_lock);
-
-	timeval_add_usec(&mp->next_run, us_dur);
-	timerthread_obj_schedule_abs(&mp->tt_obj, &mp->next_run);
+	media_player_add_packet(mp, (char *) mp->pkt.data, mp->pkt.size, us_dur, pts_scaled);
 
 out:
 	av_packet_unref(&mp->pkt);
+}
+
+
+// call->master_lock held in W
+void media_player_set_media(struct media_player *mp, struct call_media *media) {
+	mp->media = media;
+	if (media->streams.head) {
+		mp->sink = media->streams.head->data;
+		mp->crypt_handler = determine_handler(&transport_protocols[PROTO_RTP_AVP], media, 1);
+	}
 }
 
 
@@ -390,9 +497,7 @@ found:
 		ilog(LOG_ERR, "No suitable SDP section for media playback");
 		return -1;
 	}
-	mp->media = media;
-	mp->sink = media->streams.head->data;
-	mp->crypt_handler = determine_handler(&transport_protocols[PROTO_RTP_AVP], media->protocol, 1);
+	media_player_set_media(mp, media);
 
 	return 0;
 }
@@ -633,7 +738,7 @@ static void media_player_run(void *ptr) {
 	rwlock_lock_r(&call->master_lock);
 	mutex_lock(&mp->lock);
 
-	media_player_read_packet(mp);
+	mp->run_func(mp);
 
 	mutex_unlock(&mp->lock);
 	rwlock_unlock_r(&call->master_lock);
@@ -643,46 +748,11 @@ static void media_player_run(void *ptr) {
 #endif
 
 
-static void send_timer_run(void *ptr) {
-	struct send_timer *st = ptr;
-	struct call *call = st->call;
-
-	log_info_call(call);
-
-	ilog(LOG_DEBUG, "running scheduled send_timer");
-
-	struct timeval next_send = {0,};
-
-	rwlock_lock_r(&call->master_lock);
-	mutex_lock(&st->lock);
-
-	while (st->packets.length) {
-		struct codec_packet *cp = st->packets.head->data;
-		// XXX this could be made lock-free
-		if (!send_timer_send(st, cp)) {
-			g_queue_pop_head(&st->packets);
-			continue;
-		}
-		// couldn't send the last one. remember time to schedule
-		next_send = cp->to_send;
-		break;
-	}
-
-	mutex_unlock(&st->lock);
-	rwlock_unlock_r(&call->master_lock);
-
-	if (next_send.tv_sec)
-		timerthread_obj_schedule_abs(&st->tt_obj, &next_send);
-
-	log_info_clear();
-}
-
-
 void media_player_init(void) {
 #ifdef WITH_TRANSCODING
 	timerthread_init(&media_player_thread, media_player_run);
 #endif
-	timerthread_init(&send_timer_thread, send_timer_run);
+	timerthread_init(&send_timer_thread, timerthread_queue_run);
 }
 
 
