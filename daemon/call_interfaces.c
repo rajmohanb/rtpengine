@@ -1210,6 +1210,8 @@ static const char *call_offer_answer_ng(bencode_item_t *input,
 		bencode_dictionary_add_string_len(output, "sdp", chopper->output->str, chopper->output->len);
 
 	errstr = NULL;
+    /*call_print_calltags(call);
+    call_print_monologues(call);*/
 out:
 	sdp_free(&parsed);
 	streams_free(&streams);
@@ -2218,6 +2220,8 @@ const char *call_fork_media_ng(bencode_item_t *input, bencode_item_t *output) {
 		bencode_dictionary_add_string_len(output, "sdp", chopper->output->str, chopper->output->len);
 
 	errstr = NULL;
+    /*call_print_calltags(call);
+    call_print_monologues(call);*/
 out:
 	sdp_free(&parsed);
 	streams_free(&streams);

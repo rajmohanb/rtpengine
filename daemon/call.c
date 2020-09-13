@@ -2987,9 +2987,13 @@ static void __monologue_destroy(struct call_monologue *monologue, int recurse) {
 static int monologue_destroy(struct call_monologue *ml) {
 	struct call *c = ml->call;
 
-	__monologue_destroy(ml, 1);
+    if (g_queue_get_length(&c->monologues) < 3)
+	    __monologue_destroy(ml, 1);
+    else
+	    __monologue_destroy(ml, 0);
 
 	if (g_hash_table_size(c->tags) < 2 && g_hash_table_size(c->viabranches) == 0) {
+        if (g_queue_get_length(&c->monologues) < 3) {
 		ilog(LOG_INFO, "Call branch '" STR_FORMAT_M "' (%s" STR_FORMAT "%svia-branch '" STR_FORMAT_M "') "
 				"deleted, no more branches remaining",
 				STR_FMT_M(&ml->tag),
@@ -2998,6 +3002,7 @@ static int monologue_destroy(struct call_monologue *ml) {
 				ml->label.s ? "', " : "",
 				STR_FMT0_M(&ml->viabranch));
 		return 1; /* destroy call */
+        }
 	}
 
 	ilog(LOG_INFO, "Call branch '" STR_FORMAT_M "' (%s" STR_FORMAT "%svia-branch '" STR_FORMAT_M "') deleted",
@@ -3351,15 +3356,35 @@ static int reinit_forked_streams(struct call_monologue *mlA, struct call_monolog
 	return 0;
 }
 
+
+static void __fix_endpoint_map_for_forked_monologue(struct call_monologue *ml) {
+
+	GList *l, *k;
+	struct call_media *md;
+	struct endpoint_map *em;
+
+	for (k = ml->medias.head; k; k = k->next) {
+		md = k->data;
+
+        for (l = md->endpoint_maps.tail; l; l = l->prev) {
+            em = l->data;
+            if (em->wildcard == 0)
+                em->wildcard = -1;
+        }
+    }
+}
+
+
 /* must be called with call->master_lock held in W */
 static int delete_monologue(struct call_monologue *ml) {
-	int pos;
 	struct call_media *md;
 	GList *k, *o, *l;
 	const struct rtp_payload_type *rtp_pt;
 	struct packet_stream *ps=0;
 	struct call *c = ml->call;
+#if 0
 	struct stream_fd *sfd;
+#endif
 
 	ilog(LOG_INFO, "Packet stats for deleted leg:");
 	ilog(LOG_INFO, "--- Tag '" STR_FORMAT_M "'%s"STR_FORMAT"%s, created "
@@ -3502,11 +3527,6 @@ int call_delete_fork_branch(const str *callid, const str *branch,
 		goto err;
 	}
 
-	if (g_hash_table_size(c->tags) < 3) {
-		ilog(LOG_INFO, "Less than 3 number of monologues, no leg to delete");
-		goto err;
-	}
-
 	if ((ml->tagtype != TO_TAG) || (from_ml->tagtype != FROM_TAG)) {
 		ilog(LOG_INFO, "invalid tag types provided, not deleting leg");
 		goto err;
@@ -3563,6 +3583,15 @@ do_delete:
 
 			/* remove from list as this is not handled in delete_monologue() */
 			g_queue_remove(&c->monologues, ml);
+
+            /* in case the call is forked and the original callee hangs up
+             * before the forked callee accepts, then the endpoint map needs 
+             * to be updated, so that additional ports are not created upon
+             * receiving answer
+             */
+            if (g_hash_table_size(c->tags) < 2) {
+                __fix_endpoint_map_for_forked_monologue(from_ml);
+            }
 		}
 	}
 	goto success_unlock;
@@ -3580,6 +3609,8 @@ err:
 	goto out;
 
 out:
+    /*call_print_monologues(c);
+    call_print_calltags(c);*/
 	if (c)
 		obj_put(c);
 	return ret;
@@ -3596,4 +3627,71 @@ void call_get_all_calls(GQueue *q) {
 	g_hash_table_foreach(rtpe_callhash, call_get_all_calls_interator, q);
 	rwlock_unlock_r(&rtpe_callhash_lock);
 
+}
+
+void call_print_monologues(struct call *c) {
+	struct call_media *md;
+	GList *i, *k, *o;
+	const struct rtp_payload_type *rtp_pt;
+	struct packet_stream *ps=0;
+    struct call_monologue *ml;
+
+	for (i = c->monologues.head; i; i = i->next) {
+		ml = i->data;
+
+		ilog(LOG_INFO, "Monologue tag: [%s]", ml->tag.s);
+
+        for (k = ml->medias.head; k; k = k->next) {
+            md = k->data;
+
+            rtp_pt = __rtp_stats_codec(md);
+#define MLL_PREFIX "------ Media #%u ("STR_FORMAT" over %s) using " /* media log line prefix */
+#define MLL_COMMON /* common args */						\
+                md->index,				\
+                STR_FMT(&md->type),			\
+                md->protocol ? md->protocol->name : "(unknown)"
+            if (!rtp_pt)
+                ilog(LOG_INFO, MLL_PREFIX "unknown codec", MLL_COMMON);
+            else
+                ilog(LOG_INFO, MLL_PREFIX STR_FORMAT, MLL_COMMON,
+                        STR_FMT(&rtp_pt->encoding_with_params));
+
+            for (o = md->streams.head; o; o = o->next) {
+                ps = o->data;
+
+                if (PS_ISSET(ps, FALLBACK_RTCP))
+                    continue;
+
+                char *addr = sockaddr_print_buf(&ps->endpoint.address);
+                char *local_addr = ps->selected_sfd ? sockaddr_print_buf(&ps->selected_sfd->socket.local.address) : "0.0.0.0";
+
+                ilog(LOG_INFO, "--------- Port %15s:%-5u <> %s%15s:%-5u%s%s, SSRC %s%" PRIx32 "%s, "
+                        ""UINT64F" p, "UINT64F" b, "UINT64F" e, "UINT64F" ts",
+                        local_addr,
+                        (unsigned int) (ps->selected_sfd ? ps->selected_sfd->socket.local.port : 0),
+                        FMT_M(addr, ps->endpoint.port),
+                        (!PS_ISSET(ps, RTP) && PS_ISSET(ps, RTCP)) ? " (RTCP)" : "",
+                        FMT_M(ps->ssrc_in ? ps->ssrc_in->parent->h.ssrc : 0),
+                        atomic64_get(&ps->stats.packets),
+                        atomic64_get(&ps->stats.bytes),
+                        atomic64_get(&ps->stats.errors),
+                        rtpe_now.tv_sec - atomic64_get(&ps->last_packet));
+
+            }
+        }
+    }
+}
+
+
+void call_print_calltags(struct call *c) {
+
+    GHashTableIter iter;
+    gpointer key, value;
+
+    ilog(LOG_INFO, "List of [count %d] call tags with associated monologue: ", g_hash_table_size(c->tags));
+
+    g_hash_table_iter_init(&iter, c->tags);
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+        ilog(LOG_ERR, "Call leg TO_TAG: %s => %x", ((str *)key)->s, (struct call_monologue *)value);
+    }
 }
