@@ -3506,6 +3506,12 @@ int call_delete_fork_branch(const str *callid, const str *branch,
 		goto err;
 	}
 
+    if (g_queue_get_length(&c->monologues) < 3) {
+		/* to delete a leg, need atleast 3 legs */
+		ilog(LOG_INFO, "Not a forked session, no leg to delete");
+		goto err;
+	}
+
 	from_ml = g_hash_table_lookup(c->tags, fromtag);
 	if (!from_ml) {
 		ilog(LOG_INFO, "From-tag invalid, not deleting");
@@ -3537,7 +3543,7 @@ int call_delete_fork_branch(const str *callid, const str *branch,
 		if (reinit_forked_streams(from_ml->forked_dialogue, from_ml)) {
 			/* TODO */
 			ilog(LOG_INFO, "Re-initialization of the forked streams failed");
-			return -1;
+			goto err;
 		}
 
 		from_ml->active_dialogue = from_ml->forked_dialogue;
